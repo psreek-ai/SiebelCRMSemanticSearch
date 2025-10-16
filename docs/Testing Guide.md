@@ -14,11 +14,11 @@ This document outlines the testing strategy for the AI-Powered Semantic Search s
 * **Tools:** Postman/curl (ORDS API), Pytest (Python), SQL Developer (SQL/PLSQL)
 
 | Component | Test Cases |
-| :--- | :--- | :--- |
-| **Data Extraction SQL** | - Verify query runs without errors on a sample dataset.<br>- Check for correct aggregation of text from all sources.<br>- Validate that the catalog hierarchy path is generated correctly. |
-| **Indexing Pipeline** | - Test ability to read the CSV format correctly.<br>- Mock OCI API calls to verify payload construction.<br>- Test database `MERGE` logic with new and existing SR_IDs. |
-| **Semantic Search API (PL/SQL)** | - Directly execute the `GET_SEMANTIC_RECOMMENDATIONS` procedure with sample queries.<br>- Verify the structure and content of the generated JSON output.<br>- Test exception handling by simulating errors (e.g., invalid input, OCI call failure).<br>- Test the `POST /search` ORDS endpoint with a REST client to validate HTTP response codes and headers. |
-| **Siebel eScript** | - Mock the ORDS API response to test PropertySet parsing.<br>- Verify correct construction of the `SearchSpec` and `SortSpec` strings.<br>- Test error handling and user-facing error messages when the API is unreachable. |
+| :--- | :--- |
+| **Data Extraction SQL** | Verify query runs without errors on a sample dataset. Check for correct aggregation of text from all sources. Validate that the catalog hierarchy path is generated correctly. |
+| **Indexing Pipeline** | Test ability to read the CSV format correctly. Mock OCI API calls to verify payload construction. Test database `MERGE` logic with new and existing SR_IDs. |
+| **Semantic Search API (PL/SQL)** | Directly execute the `GET_SEMANTIC_RECOMMENDATIONS` procedure with sample queries. Verify the structure and content of the generated JSON output. Test exception handling by simulating errors. Test the `POST /search` ORDS endpoint with a REST client to validate HTTP response codes. |
+| **Siebel eScript** | Mock the ORDS API response to test PropertySet parsing. Verify correct construction of the `SearchSpec` and `SortSpec` strings. Test error handling when the API is unreachable. |
 
 ### 2.2. Integration Testing
 * **Scope:** Testing the complete, end-to-end data flow.
@@ -26,7 +26,7 @@ This document outlines the testing strategy for the AI-Powered Semantic Search s
 
 | Scenario ID | Test Case | Expected Result |
 | :--- | :--- | :--- |
-| IT-001 | A user enters a valid search query in the Siebel UI. | 1. A loading indicator appears.<br>2. The ORDS API returns HTTP 200.<br>3. The results applet is refreshed with ranked results in the correct order. |
+| IT-001 | A user enters a valid search query in the Siebel UI. | 1. A loading indicator appears. 2. The ORDS API returns HTTP 200. 3. The results applet is refreshed with ranked results in the correct order. |
 | IT-002 | The ORDS endpoint is temporarily down. | The Siebel UI displays a user-friendly error message ("Search is temporarily unavailable.") and does not crash. |
 | IT-003 | A new SR is resolved, and the nightly indexing job runs. | A search query related to the new SR now returns the correct catalog item as a potential recommendation. |
 
@@ -37,7 +37,7 @@ This document outlines the testing strategy for the AI-Powered Semantic Search s
 | Scenario ID | Test Case | Success Criteria |
 | :--- | :--- | :--- |
 | PT-001 | **Baseline Response Time:** Single user search via Siebel UI. | End-to-end response time < 3 seconds. |
-| PT-002 | **Load Test:** Simulate 50 concurrent users making requests directly to the ORDS endpoint for 10 minutes. | - ORDS P95 latency < 1 second.<br>- API error rate < 0.1%.<br>- Database CPU and I/O remain within acceptable thresholds. |
+| PT-002 | **Load Test:** Simulate 50 concurrent users making requests directly to the ORDS endpoint for 10 minutes. | - ORDS P95 latency < 1 second. - API error rate < 0.1%. - Database CPU and I/O remain within acceptable thresholds. |
 
 ### 2.4. Relevance and User Acceptance Testing (UAT)
 * **Scope:** Business users validate the quality and relevance of the search results. This is the most critical phase for an AI project.
