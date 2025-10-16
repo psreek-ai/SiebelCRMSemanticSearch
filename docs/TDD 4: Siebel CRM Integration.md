@@ -1,6 +1,6 @@
 # Technical Design Document 4: Siebel CRM Integration
 
-**Version:** 2.1
+**Version:** 2.1 (ORDS Edition)
 **Date:** 2025-10-16
 **Owner:** Siebel Development Team
 
@@ -12,7 +12,7 @@ This document provides the technical specification for integrating the new Seman
 | Object Type | Object Name | Action | Description |
 | :--- | :--- | :--- | :--- |
 | **Business Service** | `SemanticSearchAPIService`| Create | A new BS to encapsulate the logic for calling the ORDS API. |
-| **Applet** | `Service Request Catalog Search Applet` (Example Name) | Modify | The existing search applet's "Search" button will be reconfigured. |
+| **Applet** | `Service Request Catalog Search Applet` (Example Name) | Modify | The existing search applet's "Search" button will be reconfigured to invoke the new logic. |
 | **Applet** | `Service Request Catalog Results Applet` (Example Name) | Modify | The results applet to handle the new display order and UI elements. |
 | **Named Subsystem** | `SemanticSearchORDS` | Create | To securely store the ORDS API URL and any necessary authentication tokens/keys. |
 | **Presentation Model**| `CatalogSearchPM.js` (Example Name) | Modify/Create | A custom PM to handle the asynchronous API call and dynamic refresh of the results. |
@@ -54,20 +54,20 @@ function InvokeSearch(inputs, outputs) {
     try {
         // 1. Retrieve API details securely from Named Subsystem
         var url = TheApplication().GetProfileAttr("SemanticSearchORDS_URL");
-        var apiKey = TheApplication().GetProfileAttr("SemanticSearchORDS_APIKey"); // If using an API Gateway
+        var apiKey = TheApplication().GetProfileAttr("SemanticSearchORDS_APIKey"); // If using an API Gateway in front of ORDS
 
-        // 2. Prepare HTTP request
+        // 2. Prepare HTTP request for ORDS
         var httpSvc = TheApplication().GetService("EAI HTTP Transport");
         var httpInputs = TheApplication().NewPropertySet();
         var httpOutputs = TheApplication().NewPropertySet();
 
         httpInputs.SetProperty("HTTPRequestMethod", "POST");
-        httpInputs.SetProperty("HTTPRequestBody", queryText); // The body is plain text
+        httpInputs.SetProperty("HTTPRequestBody", queryText); // The body is plain text for this API
         httpInputs.SetProperty("HTTPRequestURL", url);
-        httpInputs.SetProperty("HTTPContentType", "text/plain");
-        httpInputs.SetProperty("HTTPHeader.Top-K", topK);
+        httpInputs.SetProperty("HTTPContentType", "text/plain"); // Set content type to plain text
+        httpInputs.SetProperty("HTTPHeader.Top-K", topK); // Pass Top-K as a header
         if (apiKey) {
-            httpInputs.SetProperty("HTTPHeader.X-API-Key", apiKey); // Example header for security
+            httpInputs.SetProperty("HTTPHeader.X-API-Key", apiKey); // Example security header for API Gateway
         }
 
         // 3. Invoke the API
@@ -92,7 +92,7 @@ function InvokeSearch(inputs, outputs) {
         }
     } catch (e) {
         outputs.SetProperty("Error", e.toString());
-        // Do not use RaiseErrorText as it halts execution; the PM will handle the error display.
+        // The PM will handle displaying a user-friendly error message.
     } finally {
         outputs.AddChild(psResults);
     }
@@ -108,14 +108,20 @@ The PM will be the central controller for the user interaction.
 
 ```javascript
 // Conceptual logic for the custom Presentation Model
-// On the "Search" button click event handler:
+// This code would be attached to the "Search" button's click event handler.
 
 // 1. Get the search query from the input control
 var query = this.Get("GetSearchQueryControlValue");
-if (!query) { return; } // Do nothing if query is empty
+if (!query || query.trim() === "") {
+    SiebelApp.S_App.ui.ShowError("Please enter a search query.");
+    return;
+}
 
-// 2. Show a loading indicator
-this.Get("ShowLoadingIndicator")(true);
+// 2. Show a loading indicator and clear previous results
+var resultsApplet = this.Get("GetResultsApplet");
+var bc = resultsApplet.GetBusComp();
+bc.NewRecord(false); // Clear the applet
+this.Get("ShowLoadingIndicator")(true); // This would be a custom function to show a spinner
 
 // 3. Prepare inputs for the Business Service
 var bsInputs = SiebelApp.S_App.NewPropertySet();
@@ -133,7 +139,6 @@ SiebelApp.S_App.GetService("SemanticSearchAPIService").InvokeMethod("InvokeSearc
         // 6. Process the response
         var error = outputs.GetProperty("Error");
         if (error) {
-            // Display a user-friendly error message in the UI
             SiebelApp.S_App.ui.ShowError("Search is temporarily unavailable. Please try again later.");
             return;
         }
@@ -152,20 +157,18 @@ SiebelApp.S_App.GetService("SemanticSearchAPIService").InvokeMethod("InvokeSearc
                     sortClauses.push("WHEN '" + id + "' THEN " + rank);
                 }
                 
-                // 7. Construct the SearchSpec and SortSpec
+                // 7. Construct the SearchSpec and SortSpec to enforce the API's ranking
                 var searchSpec = "[Id] IN (" + idList.join(",") + ")";
                 var sortSpec = "CASE [Id] " + sortClauses.join(" ") + " ELSE 99 END";
 
-                // 8. Get the results applet and apply the query
-                var resultsApplet = this.Get("GetResultsApplet");
-                var bc = resultsApplet.GetBusComp();
+                // 8. Apply the query to the results applet's business component
                 bc.ClearToQuery();
-                bc.SetSortSpec(sortSpec);
+                bc.SetSortSpec(sortSpec); // CRITICAL: Set SortSpec before SearchSpec
                 bc.SetSearchSpecStr(searchSpec);
                 bc.ExecuteQuery(SiebelApp.S_App.GetSWEConsts().get("SWE_QUERY_FWD_ONLY"));
             } else {
-                // Handle case with no results
-                // Display "No relevant results found." message
+                // Handle case with no results by displaying a message in the UI
+                SiebelApp.S_App.ui.ShowError("No relevant results found for your query.");
             }
         }
     }
@@ -175,9 +178,7 @@ SiebelApp.S_App.GetService("SemanticSearchAPIService").InvokeMethod("InvokeSearc
 ## 6\. Deployment Objects
 
   * **Business Service:** `SemanticSearchAPIService`
-  * **Named Subsystem:** `SemanticSearchORDS` (with `URL` and `APIKey` parameters)
+  * **Named Subsystem:** `SemanticSearchORDS` (with `URL` and optional `APIKey` parameters)
   * **Custom JS Files:** `CatalogSearchPM.js` (and associated PR if needed for loading indicator)
   * **Siebel Web Templates:** Manifest registration for the new custom JS files.
   * **SRF:** All compiled object definitions.
-
-This design ensures a responsive user experience by using an asynchronous API call and provides a clean separation of concerns between the UI logic (in the PM) and the integration logic (in the Business Service).
