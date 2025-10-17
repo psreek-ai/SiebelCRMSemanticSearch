@@ -5,7 +5,7 @@
 **Owner:** AI / Data Engineering Team
 
 ## 1. Objective
-This document provides the technical specifications for generating vector embeddings from the staged Siebel narratives and populating the Oracle 23ai vector database. We will use **PL/SQL and DBMS_CLOUD** to call the OCI Generative AI service directly from the database, eliminating the need for external Python scripts.
+This document provides the technical specifications for generating vector embeddings from the staged Siebel narratives and populating the **Oracle Autonomous Database** vector store. We will use **PL/SQL and DBMS_CLOUD** to call the OCI Generative AI service directly from the database, eliminating the need for external Python scripts. The pre-configured DBMS_CLOUD package in Autonomous Database simplifies OCI service integration.
 
 ## 2. Architecture Overview
 
@@ -26,9 +26,9 @@ Create HNSW Vector Index
 
 ## 3. Implementation Steps
 
-### Step 1: Create OCI Credentials in Oracle 23ai
+### Step 1: Create OCI Credentials in Oracle Autonomous Database
 
-**Executor:** Database Administrator on Oracle 23ai  
+**Executor:** Database Administrator on Oracle Autonomous Database  
 **Duration:** 20 minutes
 
 #### 1.1. Obtain OCI API Credentials
@@ -115,7 +115,7 @@ END;
 
 ### Step 2: Create Vector Table
 
-**Executor:** Database Administrator on Oracle 23ai  
+**Executor:** Database Administrator on Oracle Autonomous Database  
 **Duration:** 5 minutes
 
 #### 2.1. Create the Vector Table DDL
@@ -373,7 +373,7 @@ WHERE ROWNUM <= 3;
 
 ### Step 4: Process All Narratives in Batches
 
-**Executor:** Database Administrator on Oracle 23ai  
+**Executor:** Database Administrator on Oracle Autonomous Database  
 **Duration:** Several hours (depending on data volume)
 
 #### 4.1. Create Processing Loop Script
@@ -457,7 +457,7 @@ WHERE job_name = 'DAILY_EMBEDDING_GENERATION';
 
 ### Step 5: Create Vector Index
 
-**Executor:** Database Administrator on Oracle 23ai  
+**Executor:** Database Administrator on Oracle Autonomous Database  
 **Duration:** 30-60 minutes (depending on data volume)
 
 #### 5.1. Create HNSW Vector Index

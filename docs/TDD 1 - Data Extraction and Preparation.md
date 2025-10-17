@@ -5,21 +5,23 @@
 **Owner:** Database Team
 
 ## 1. Objective
-This document provides the technical specification for extracting and preparing historical service request data from the Oracle 12c Siebel database and loading it into Oracle 23ai. Instead of using CSV exports and Python scripts, we will use **direct database-to-database connectivity** via Oracle Database Links to copy relevant tables and then use SQL to create the consolidated dataset.
+This document provides the technical specification for extracting and preparing historical service request data from the Oracle 12c Siebel database and loading it into **Oracle Autonomous Database on Azure**. We use **direct database-to-database connectivity** via Oracle Database Links to copy relevant tables and then use SQL to create the consolidated dataset. The managed nature of Autonomous Database simplifies connectivity and security configuration.
 
 ## 2. Architecture Overview
 
 ### 2.1. Data Flow
 ```
-Oracle 12c (Siebel DB)  →  Database Link  →  Oracle 23ai (Vector DB)
-      ↓
-Copy relevant tables (S_SRV_REQ, S_ORDER, S_EVT_ACT, S_PROD_INT)
-      ↓
-Run SQL aggregation query in 23ai
-      ↓
-Populate staging table with narrative text
-      ↓
-Generate embeddings (covered in TDD 2)
+Oracle 12c (Siebel DB on Azure VM)  →  Private Network  →  Oracle Autonomous Database on Azure
+      ↓                                   (VNet Peering)              ↓
+   Source Data                                                Database Link
+                                                                    ↓
+                                              Copy relevant tables (S_SRV_REQ, S_ORDER, S_EVT_ACT, S_PROD_INT)
+                                                                    ↓
+                                              Run SQL aggregation query in ADB
+                                                                    ↓
+                                              Populate staging table with narrative text
+                                                                    ↓
+                                              Generate embeddings (covered in TDD 2)
 ```
 
 ### 2.2. Primary Source Tables
@@ -30,47 +32,69 @@ Generate embeddings (covered in TDD 2)
 
 ## 3. Implementation Steps
 
-### Step 1: Create Database Link from Oracle 23ai to Oracle 12c
+### Step 1: Create Database Link from Oracle Autonomous Database to Oracle 12c
 
-**Executor:** Database Administrator on Oracle 23ai  
-**Duration:** 15 minutes
+**Executor:** Database Administrator on Oracle Autonomous Database  
+**Duration:** 20 minutes
 
-#### 1.1. Verify Network Connectivity
+#### 1.1. Configure Network Connectivity Prerequisites
+
+**Important:** Before creating the database link, ensure secure network connectivity between Oracle Autonomous Database and the Oracle 12c VM on Azure.
+
+**Network Setup Requirements:**
+
+1. **VNet Peering (Recommended):**
+   - Configure Azure VNet peering between:
+     - The VNet hosting the Autonomous Database private endpoint
+     - The VNet hosting the Oracle 12c VM
+   
+2. **Network Security Group (NSG) Rules:**
+   - Update NSG on Oracle 12c VM to allow inbound traffic:
+     ```
+     Source: Autonomous Database subnet CIDR range
+     Destination Port: 1521
+     Protocol: TCP
+     Action: Allow
+     ```
+
+3. **Oracle 12c Listener Configuration:**
+   - Verify Oracle 12c listener is running and accepting connections
+   ```bash
+   # On Oracle 12c VM
+   lsnrctl status
+   ```
+
+#### 1.2. Test Network Connectivity
 ```bash
-# From Oracle 23ai database server, test connectivity to Oracle 12c
-tnsping SIEBEL_12C_DB
-# Expected output: OK (XX msec)
+# From an Azure VM in the same VNet as ADB private endpoint, test connectivity to Oracle 12c
+telnet <DB_12C_HOST> 1521
+# Expected: Connection successful
+
+# Or using netcat
+nc -zv <DB_12C_HOST> 1521
+# Expected: Connection to <DB_12C_HOST> 1521 port [tcp/oracle] succeeded!
 ```
 
-#### 1.2. Create TNS Entry (if not exists)
-On Oracle 23ai server, edit `$ORACLE_HOME/network/admin/tnsnames.ora`:
+#### 1.3. Create Database Link in Oracle Autonomous Database
 
-```
-SIEBEL_12C_DB =
-  (DESCRIPTION =
-    (ADDRESS = (PROTOCOL = TCP)(HOST = siebel-db-host.example.com)(PORT = 1521))
-    (CONNECT_DATA =
-      (SERVER = DEDICATED)
-      (SERVICE_NAME = SIEBELDB)
-    )
-  )
-```
+**Note:** In Autonomous Database, you don't manage tnsnames.ora files. Instead, use inline connection descriptors.
 
-#### 1.3. Test Connection
-```bash
-sqlplus siebel_readonly@SIEBEL_12C_DB
-# Enter password when prompted
-# If successful, you should see SQL*Plus prompt
-```
-
-#### 1.4. Create Database Link in Oracle 23ai
-Connect to Oracle 23ai as SEMANTIC_SEARCH user:
+Connect to Autonomous Database as SEMANTIC_SEARCH user:
 
 ```sql
--- Create database link to Oracle 12c Siebel database
+-- Connect using SQL*Plus or SQL Developer with wallet configuration
+sqlplus SEMANTIC_SEARCH/<password>@<service_name>_high
+
+-- Create database link with inline connection descriptor
 CREATE DATABASE LINK SIEBEL_12C_LINK
   CONNECT TO siebel_readonly IDENTIFIED BY "<password>"
-  USING 'SIEBEL_12C_DB';
+  USING '(DESCRIPTION =
+           (ADDRESS = (PROTOCOL = TCP)(HOST = <DB_12C_HOST>)(PORT = 1521))
+           (CONNECT_DATA =
+             (SERVER = DEDICATED)
+             (SERVICE_NAME = <DB_12C_SERVICE>)
+           )
+         )';
 
 -- Test the database link
 SELECT COUNT(*) FROM SIEBEL.S_SRV_REQ@SIEBEL_12C_LINK;
@@ -87,25 +111,36 @@ SELECT 'S_PROD_INT', COUNT(*) FROM SIEBEL.S_PROD_INT@SIEBEL_12C_LINK;
 ```
 
 **Troubleshooting:**
-- **ORA-12154**: TNS name not found → Check tnsnames.ora configuration
-- **ORA-12541**: No listener → Verify Oracle 12c listener is running
-- **ORA-01017**: Invalid username/password → Verify credentials
-- **ORA-02019**: Connection description for remote database not found → Check USING clause
+- **ORA-12154**: TNS name not found → Check inline connection descriptor syntax
+- **ORA-12541**: No listener → Verify Oracle 12c listener is running: `lsnrctl status`
+- **ORA-01017**: Invalid username/password → Verify siebel_readonly credentials
+- **ORA-02019**: Connection description for remote database not found → Check USING clause format
+- **ORA-12170**: Connect timeout → Verify:
+  - VNet peering is established and active
+  - NSG rules allow traffic on port 1521
+  - Oracle 12c firewall allows connections from ADB subnet
+  - Private endpoint DNS resolution is working
 
 ---
 
-### Step 2: Create Staging Schema and Tables in Oracle 23ai
+### Step 2: Create Staging Schema and Tables in Oracle Autonomous Database
 
-**Executor:** Database Administrator on Oracle 23ai  
+**Executor:** Database Administrator on Oracle Autonomous Database  
 **Duration:** 10 minutes
 
 #### 2.1. Create Staging Schema (if not exists)
+
+**Note:** In Autonomous Database, user creation is performed by connecting as the ADMIN user (not SYSDBA).
+
 ```sql
--- Connect as SYSDBA
+-- Connect as ADMIN user
+sqlplus ADMIN/<password>@<service_name>_high
+
+-- Create application user
 CREATE USER SEMANTIC_SEARCH IDENTIFIED BY "<secure_password>"
-  DEFAULT TABLESPACE USERS
+  DEFAULT TABLESPACE DATA
   TEMPORARY TABLESPACE TEMP
-  QUOTA UNLIMITED ON USERS;
+  QUOTA UNLIMITED ON DATA;
 
 -- Grant necessary privileges
 GRANT CREATE SESSION TO SEMANTIC_SEARCH;
@@ -115,24 +150,19 @@ GRANT CREATE PROCEDURE TO SEMANTIC_SEARCH;
 GRANT CREATE SEQUENCE TO SEMANTIC_SEARCH;
 GRANT CREATE JOB TO SEMANTIC_SEARCH;
 
--- Grant privileges for DBMS_CLOUD (needed for OCI API calls)
+-- Grant privileges for DBMS_CLOUD (pre-configured in Autonomous Database)
 GRANT EXECUTE ON DBMS_CLOUD TO SEMANTIC_SEARCH;
 GRANT EXECUTE ON DBMS_CLOUD_AI TO SEMANTIC_SEARCH;
 
--- Grant network ACL privileges for OCI API calls
-BEGIN
-  DBMS_NETWORK_ACL_ADMIN.APPEND_HOST_ACE(
-    host => '*.oraclecloud.com',
-    ace  => xs$ace_type(
-      privilege_list => xs$name_list('http', 'connect', 'resolve'),
-      principal_name => 'SEMANTIC_SEARCH',
-      principal_type => xs_acl.ptype_db
-    )
-  );
-END;
-/
+-- Note: Network ACL for *.oraclecloud.com is automatically configured in Autonomous Database
+-- No manual DBMS_NETWORK_ACL_ADMIN configuration required!
 
 COMMIT;
+
+-- Verify user creation
+SELECT username, account_status, default_tablespace
+FROM dba_users
+WHERE username = 'SEMANTIC_SEARCH';
 ```
 
 #### 2.2. Create Staging Tables
@@ -220,9 +250,9 @@ END;
 
 ---
 
-### Step 3: Copy Data from Oracle 12c to Oracle 23ai
+### Step 3: Copy Data from Oracle 12c to Oracle Autonomous Database
 
-**Executor:** Database Administrator on Oracle 23ai  
+**Executor:** Database Administrator on Oracle Autonomous Database  
 **Duration:** 30-60 minutes (depending on data volume)
 
 #### 3.1. Initial Full Load
@@ -328,8 +358,8 @@ SELECT 'STG_S_PROD_INT', COUNT(*) FROM STG_S_PROD_INT;
 
 ### Step 4: Create Data Aggregation View
 
-**Executor:** Database Administrator on Oracle 23ai  
-**Duration:** 10 minutes
+**Executor:** Database Administrator on Oracle Autonomous Database  
+**Duration:** 30 minutes
 
 #### 4.1. Create Catalog Hierarchy View
 ```sql
@@ -440,7 +470,7 @@ WHERE ROWNUM <= 5;
 
 ### Step 5: Create Staging Table for Vector Generation
 
-**Executor:** Database Administrator on Oracle 23ai  
+**Executor:** Database Administrator on Oracle Autonomous Database  
 **Duration:** 20-40 minutes (depending on data volume)
 
 #### 5.1. Create the Narrative Staging Table
@@ -508,7 +538,7 @@ WHERE ROWNUM <= 10;
 
 ### Step 6: Set Up Incremental Refresh Process
 
-**Executor:** Database Administrator on Oracle 23ai  
+**Executor:** Database Administrator on Oracle Autonomous Database  
 **Duration:** 15 minutes
 
 #### 6.1. Create Incremental Refresh Procedure

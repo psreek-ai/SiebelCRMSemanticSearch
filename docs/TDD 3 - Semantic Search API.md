@@ -5,133 +5,92 @@
 **Owner:** Database Development Team
 
 ## 1. Objective
-This document specifies the design and implementation of the RESTful API that provides semantic search functionality. The API is built and hosted directly within the Oracle 23ai database using **Oracle REST Data Services (ORDS)**, serving as a high-performance, secure endpoint that encapsulates all AI and vector database logic.
+This document specifies the design and implementation of the RESTful API that provides semantic search functionality. The API is built and hosted directly within **Oracle Autonomous Database on Azure** using the **pre-configured Oracle REST Data Services (ORDS)**, serving as a high-performance, secure endpoint that encapsulates all AI and vector database logic. The managed nature of Autonomous Database eliminates ORDS installation and configuration overhead.
 
 ## 2. Technology Stack
-* **Hosting Platform:** Oracle Database 23ai (Enterprise Edition)
-* **API Engine:** Oracle REST Data Services (ORDS) 23.x or later
+* **Hosting Platform:** Oracle Autonomous Database on Azure (Serverless)
+* **API Engine:** Built-in Oracle REST Data Services (ORDS) - Pre-installed and Pre-configured
 * **Language:** PL/SQL, SQL with JSON extensions
-* **Security:** OAuth2 / API Keys via ORDS
+* **Security:** OAuth2 / API Keys via ORDS (managed security model)
 
 ## 3. Prerequisites
 
 Before implementing this TDD, ensure:
 - ✅ TDD 1 is complete (data extraction and staging)
 - ✅ TDD 2 is complete (vector generation and indexing)
-- ✅ ORDS is installed and configured on Oracle 23ai
+- ✅ Autonomous Database is provisioned and accessible
+- ✅ **No ORDS installation required** - ORDS comes pre-configured with Autonomous Database!
 
 ---
 
 ## 4. Implementation Steps
 
-### Step 1: Install and Configure ORDS
+### Step 1: Verify ORDS is Available (No Installation Required!)
 
 **Executor:** Database Administrator  
-**Duration:** 45 minutes
+**Duration:** 5 minutes
 
-#### 1.1. Download and Install ORDS
+**🎉 Key Advantage:** Oracle Autonomous Database includes ORDS pre-installed, pre-configured, and ready to use immediately. This eliminates approximately 45 minutes of installation and configuration work!
 
-```bash
-# Download ORDS from Oracle website
-# https://www.oracle.com/database/technologies/appdev/rest.html
-
-# Extract ORDS
-cd /opt/oracle
-unzip ords-latest.zip -d ords
-
-# Set environment variables
-export ORDS_HOME=/opt/oracle/ords
-export PATH=$ORDS_HOME/bin:$PATH
-
-# Verify installation
-ords --version
-# Expected output: ORDS 23.x.x.xxx.xxxx
-```
-
-#### 1.2. Configure ORDS Connection Pool
+#### 1.1. Verify ORDS Accessibility
 
 ```bash
-# Create configuration directory
-mkdir -p /opt/oracle/ords/config
+# Get the ORDS URL from Azure Portal (Oracle Database@Azure resource details)
+# Format: https://<unique_id>-<db_name>.adb.<region>.oraclecloudapps.com/ords/
 
-# Run ORDS configuration
-cd /opt/oracle/ords
-ords install
+# Test ORDS is accessible
+curl https://<unique_id>-<db_name>.adb.<region>.oraclecloudapps.com/ords/
 
-# You'll be prompted for:
-# - Database hostname: <your-23ai-db-host>
-# - Database port: 1521
-# - Database service name: <your-service-name>
-# - Administrator username: SYS
-# - Administrator password: <sys-password>
-# - Default tablespace for ORDS metadata: SYSAUX
-# - Temporary tablespace for ORDS metadata: TEMP
-# - ORDS public user password: <create-secure-password>
+# Expected: HTML response showing ORDS information page
 ```
 
-#### 1.3. Start ORDS in Standalone Mode
+#### 1.2. Verify ORDS Configuration in Database
 
-```bash
-# Start ORDS on port 8080 (or your preferred port)
-ords --config /opt/oracle/ords/config serve
+```sql
+-- Connect as ADMIN user
+sqlplus ADMIN/<password>@<service_name>_high
 
-# Expected output:
-# ORDS is ready
-# Mapped local pools from /opt/oracle/ords/config/databases:
-# /ords/ => default => VALID
-# 
-# Server started at http://localhost:8080/ords
+-- Check ORDS installation status
+SELECT * FROM DBA_ORDS_SCHEMAS;
+
+-- Verify ORDS version
+SELECT ORDS_METADATA.ORDS_VERSION FROM DUAL;
+-- Expected: 23.x or later
+
+-- Check available ORDS procedures
+SELECT object_name, object_type 
+FROM all_objects 
+WHERE owner = 'ORDS' 
+  AND object_type IN ('PACKAGE', 'PROCEDURE')
+ORDER BY object_name;
 ```
 
-#### 1.4. Verify ORDS is Running
+**What You DON'T Need to Do:**
+- ❌ Download ORDS software
+- ❌ Install ORDS
+- ❌ Configure ORDS connection pools
+- ❌ Set up ORDS as a system service
+- ❌ Manage ORDS updates and patches
 
-```bash
-# Test ORDS health endpoint
-curl http://localhost:8080/ords/
-
-# Expected: HTML page showing ORDS welcome page
-```
-
-#### 1.5. Configure ORDS as a Service (Optional - for production)
-
-Create systemd service file: `/etc/systemd/system/ords.service`
-
-```ini
-[Unit]
-Description=Oracle REST Data Services
-After=network.target
-
-[Service]
-Type=simple
-User=oracle
-WorkingDirectory=/opt/oracle/ords
-ExecStart=/opt/oracle/ords/bin/ords --config /opt/oracle/ords/config serve
-Restart=on-failure
-RestartSec=10
-
-[Install]
-WantedBy=multi-user.target
-```
-
-```bash
-# Enable and start the service
-sudo systemctl daemon-reload
-sudo systemctl enable ords
-sudo systemctl start ords
-sudo systemctl status ords
-```
+**What's Already Configured:**
+- ✅ ORDS is running and managed by Oracle
+- ✅ HTTPS endpoints are configured with SSL certificates
+- ✅ Connection pooling is optimized
+- ✅ Automatic updates and patches are applied
+- ✅ High availability is built-in
 
 ---
 
 ### Step 2: Enable ORDS for SEMANTIC_SEARCH Schema
 
 **Executor:** Database Administrator  
-**Duration:** 10 minutes
+**Duration:** 5 minutes
 
 #### 2.1. Enable REST Services for Schema
 
 ```sql
 -- Connect as SEMANTIC_SEARCH user
+sqlplus SEMANTIC_SEARCH/<password>@<service_name>_high
 
 BEGIN
     ORDS.ENABLE_SCHEMA(
@@ -148,15 +107,19 @@ END;
 -- Verify schema is enabled
 SELECT name, enabled, url_mapping_type, url_mapping_pattern
 FROM user_ords_schemas;
+
+-- Expected output:
+-- NAME               ENABLED  URL_MAPPING_TYPE  URL_MAPPING_PATTERN
+-- SEMANTIC_SEARCH    TRUE     BASE_PATH         semantic_search
 ```
 
 #### 2.2. Test Schema Accessibility
 
 ```bash
-# Test the schema endpoint
-curl http://localhost:8080/ords/semantic_search/
+# Test the schema endpoint using the Autonomous Database ORDS URL
+curl https://<unique_id>-<db_name>.adb.<region>.oraclecloudapps.com/ords/semantic_search/
 
-# Expected: 404 or empty response (no modules defined yet)
+# Expected: 404 or empty JSON response (no modules defined yet - this is normal)
 ```
 
 ---

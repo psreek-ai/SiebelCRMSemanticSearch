@@ -24,33 +24,43 @@ The solution is designed with a simplified, highly performant architecture that 
 | :--- | :--- | :--- |
 | **Data Source** | Oracle 12c (Siebel DB) | The existing system of record containing all historical CRM data. |
 | **Data Extraction Pipeline** | Database Links, SQL | Extracts, aggregates, and prepares historical data for indexing using direct database-to-database connectivity. Runs as a batch process. |
-| **Vector Database** | Oracle Database 23ai | Stores the text narratives and their corresponding vector embeddings. Hosts the high-performance HNSW vector index and the API logic. |
+| **Vector Database** | Oracle Autonomous Database on Azure (Serverless) | Stores the text narratives and their corresponding vector embeddings. Hosts the high-performance HNSW vector index and the API logic. Fully managed PaaS solution with automated patching, backups, and scaling. |
 | **Embedding Service**| OCI Generative AI Service (Cohere Embed v3.0) | A managed cloud service that converts text narratives and user queries into numerical vectors (1024 dimensions), called from within the database via DBMS_CLOUD. |
-| **Semantic Search API** | **Oracle REST Data Services (ORDS) & PL/SQL** | A high-performance RESTful API hosted directly by the Oracle database. The PL/SQL procedure encapsulates all AI search logic including vector similarity search and catalog aggregation. |
+| **Semantic Search API** | **Built-in Oracle REST Data Services (ORDS) on Autonomous Database & PL/SQL** | A high-performance RESTful API hosted directly by the Oracle Autonomous Database. ORDS comes pre-installed and pre-configured, eliminating deployment overhead. The PL/SQL procedure encapsulates all AI search logic including vector similarity search and catalog aggregation. |
 | **Siebel CRM** | Siebel Open UI, eScript, Custom Presentation Models | The user-facing application. Modified to call the ORDS endpoint via Named Subsystem and Business Service, displaying intelligent recommendations in the catalog search interface. |
 | **Standalone Test App** | Python, Streamlit, Plotly | A web application for testing and demonstrating the semantic search API independently of Siebel. Provides side-by-side view of matching SRs and recommended catalog paths with analytics. See [TDD 5](TDD%205%20-%20Standalone%20Test%20Application.md) for complete specifications. |
 
 ### 2.2. Technology Stack Rationale
 
-* **Oracle Database 23ai:** Chosen to leverage existing Oracle expertise, maintain data within a single secure ecosystem, and utilize its enterprise-grade AI Vector Search capabilities.
-* **Oracle REST Data Services (ORDS):** This is the **preferred approach** for this project.
+* **Oracle Autonomous Database on Azure:** Chosen as a fully managed, serverless PaaS solution that delivers enterprise-grade AI Vector Search capabilities with significant operational advantages:
+    * **Reduced Administrative Overhead:** Eliminates manual database patching, backups, and performance tuning. The service automatically manages these tasks.
+    * **Enhanced Security:** Built-in security features including automatic encryption, threat detection, and data masking are configured out-of-the-box.
+    * **High Availability:** 99.95% SLA with automated failover and disaster recovery capabilities built into the service.
+    * **Serverless Elasticity:** Automatically scales compute and storage resources based on workload demands.
+    * **Low-Latency Azure Integration:** Deployed via Oracle Database Service for Azure (ODSA), providing a private, high-speed interconnect between Azure and OCI data centers for optimal performance.
+    * **Cost Efficiency:** Pay only for actual consumption with serverless pricing model, eliminating over-provisioning costs.
+    
+* **Built-in Oracle REST Data Services (ORDS):** ORDS comes pre-installed and pre-configured in Autonomous Database, offering significant deployment advantages:
+    * **Zero Installation:** No need to download, install, or configure ORDS separately. It's ready to use immediately.
     * **Performance:** Eliminates the network hop between a separate API layer and the database, resulting in lower latency. The logic lives where the data lives.
-    * **Simplicity:** Reduces the number of components to manage, secure, and deploy. Leverages existing PL/SQL skills.
-    * **Security:** Enhances the security posture by removing the need to manage database credentials externally. Authentication is handled closer to the data.
-* **OCI Generative AI Service:** Provides access to state-of-the-art embedding models without the overhead of hosting and managing them.
+    * **Simplicity:** Drastically reduces deployment complexity and time-to-production. No separate infrastructure to manage.
+    * **Security:** Fully integrated with Autonomous Database security model. Authentication is handled within the managed service.
+    * **Automatic Updates:** ORDS is automatically updated as part of the Autonomous Database service.
+    
+* **OCI Generative AI Service:** Provides access to state-of-the-art embedding models without the overhead of hosting and managing them. Seamlessly accessible from Autonomous Database via DBMS_CLOUD.
 
 ## 3. Data Flow
 
 ### 3.1. Offline Indexing Flow (Batch Process)
 1.  A scheduled job initiates the **Data Extraction Pipeline**.
 2.  An optimized SQL script runs on the **Oracle 12c** database, aggregating text for millions of resolved requests.
-3.  The pipeline processes the extracted data, calls the **OCI Embedding Service** to get vectors, and inserts the data into the **Oracle 23ai Vector Database**.
+3.  The pipeline processes the extracted data, calls the **OCI Embedding Service** to get vectors, and inserts the data into the **Oracle Autonomous Database Vector Store**.
 4.  This process runs periodically (e.g., nightly) to keep the search index up-to-date.
 
 ### 3.2. Real-Time Search Flow (User Interaction)
 1.  A user types a natural language query into the Siebel search UI.
-2.  A Siebel eScript makes an HTTPS `POST` request to the **ORDS endpoint**, passing the user's query text.
-3.  The ORDS listener routes the request to the `GET_SEMANTIC_RECOMMENDATIONS` PL/SQL procedure within the Oracle 23ai database.
+2.  A Siebel eScript makes an HTTPS `POST` request to the **managed ORDS endpoint**, passing the user's query text.
+3.  The pre-configured ORDS listener routes the request to the `GET_SEMANTIC_RECOMMENDATIONS` PL/SQL procedure within the Oracle Autonomous Database.
 4.  The PL/SQL procedure calls the **OCI Embedding Service** to convert the user's query into a vector.
 5.  The procedure then executes a `VECTOR_DISTANCE` query against the local vector index to find the most similar historical records.
 6.  The procedure aggregates the results to find the top 5 most frequently used catalog items.
@@ -61,16 +71,34 @@ The solution is designed with a simplified, highly performant architecture that 
 
 | Category | Requirement | Implementation Strategy |
 | :--- | :--- | :--- |
-| **Performance** | End-to-end search response time < 3 seconds (P95). | - HNSW vector index in Oracle 23ai.<br>- Co-location of API logic and data via ORDS. |
-| **Scalability** | API must handle 50 concurrent users. Indexing must process 10,000+ new records nightly. | - ORDS and the Oracle Database are highly scalable.<br>- Batch processing for the indexing pipeline. |
-| **Availability** | The search service should have 99.9% uptime. | - Oracle Database high-availability features (Data Guard, RAC).<br>- Graceful degradation in Siebel if the API is unreachable. |
+| **Performance** | End-to-end search response time < 3 seconds (P95). | - HNSW vector index in Oracle Autonomous Database.<br>- Co-location of API logic and data via pre-configured ORDS.<br>- Low-latency private interconnect between Azure and OCI via ODSA. |
+| **Scalability** | API must handle 50 concurrent users. Indexing must process 10,000+ new records nightly. | - Autonomous Database and ORDS automatically scale based on workload.<br>- Serverless architecture eliminates manual capacity planning.<br>- Batch processing for the indexing pipeline. |
+| **Availability** | The search service should have 99.9% uptime (99.95% SLA provided). | - Built-in high availability with automated failover and disaster recovery.<br>- No manual DBA intervention required for maintenance.<br>- Graceful degradation in Siebel if the API is unreachable. |
 | **Security** | All data in transit must be encrypted. Access to the API and database must be authenticated and authorized. | - TLS 1.2+ for all connections.<br>- ORDS endpoint protection (OAuth2 or Gateway API Keys).<br>- OCI Credentials stored securely within the database for callouts. |
 | **Maintainability** | The solution must be modular and easy to update. | - Logic is encapsulated in a single, version-controlled PL/SQL package.<br>- Comprehensive logging and monitoring. |
 
 ## 5. Security Architecture
-1.  **Network:** The Oracle 23ai database and its ORDS listener will reside within a private Virtual Cloud Network (VCN). An OCI Load Balancer or API Gateway will be the only public-facing entry point, terminating TLS. Network Security Groups (NSGs) will restrict traffic to the database listener port.
-2.  **Authentication:** Siebel will authenticate to the ORDS endpoint via the Load Balancer or API Gateway (e.g., using a mandatory API Key). The ORDS endpoint itself can be further secured using ORDS-native privileges or OAuth2.
-3.  **Callout Security:** The PL/SQL procedure's callout to the OCI Embedding Service is secured using a `DBMS_CLOUD` credential, which stores OCI API keys encrypted within the database, eliminating the need for external credential files or vaults for the API layer.
+
+### 5.1. Managed Security Advantages
+Oracle Autonomous Database on Azure provides enterprise-grade security with significantly reduced administrative overhead:
+
+1.  **Automatic Encryption:** All data is encrypted at rest and in transit by default. Transparent Data Encryption (TDE) is automatically enabled without manual configuration.
+2.  **Built-in Threat Detection:** Autonomous Database includes Database Vault and Data Masking capabilities for protecting sensitive data.
+3.  **Automated Security Patching:** Critical security patches are applied automatically during maintenance windows, eliminating manual patching cycles.
+
+### 5.2. Network Security
+1.  **Private Connectivity:** The Oracle Autonomous Database is accessible via private endpoints through the Azure-OCI interconnect (ODSA), ensuring traffic never traverses the public internet.
+2.  **Network Isolation:** Network Security Groups (NSGs) and firewall rules restrict access to authorized Azure resources only.
+3.  **Managed ORDS Endpoint:** The built-in ORDS endpoint is accessed through secure TLS 1.2+ connections, with certificate management handled by the service.
+4.  **API Gateway (Optional):** For additional security layers, an Azure API Management or OCI API Gateway can be placed in front of the ORDS endpoint.
+
+### 5.3. Authentication and Authorization
+1.  **Schema-Level Security:** ORDS endpoints are secured using ORDS-native privileges or OAuth2 authentication mechanisms.
+2.  **API Key Authentication:** Siebel authenticates to the ORDS endpoint using API keys managed within the Autonomous Database security model.
+3.  **Database User Privileges:** The SEMANTIC_SEARCH schema has minimal privileges, following the principle of least privilege.
+
+### 5.4. Callout Security
+The PL/SQL procedure's callout to the OCI Embedding Service is secured using a `DBMS_CLOUD` credential, which stores OCI API keys encrypted within the Autonomous Database, eliminating the need for external credential files or vaults.
 
 ## 6. Standalone Test Application
 
@@ -134,10 +162,11 @@ The test application provides a rich user interface with the following capabilit
                           │
           ┌───────────────┴───────────────┐
           ▼                               ▼
-┌─────────────────────┐         ┌──────────────────────┐
-│  ORDS REST API      │         │  Oracle 23ai DB      │
-│  (Primary Mode)     │         │  (Optional Direct)   │
-└─────────────────────┘         └──────────────────────┘
+┌─────────────────────┐         ┌──────────────────────────┐
+│  ORDS REST API      │         │  Oracle Autonomous DB    │
+│  (Primary Mode)     │         │  on Azure (Optional      │
+│  Pre-configured     │         │  Direct Connection)      │
+└─────────────────────┘         └──────────────────────────┘
 ```
 
 ### 6.4. Technology Stack

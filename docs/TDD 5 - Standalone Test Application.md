@@ -65,7 +65,8 @@ The standalone test application serves multiple critical purposes:
           ┌───────────────┴───────────────┐
           ▼                               ▼
 ┌─────────────────────┐         ┌──────────────────────┐
-│  ORDS REST API      │         │  Oracle 23ai DB      │
+│  ORDS REST API      │         │  Oracle Autonomous   │
+│  (Pre-configured)   │         │  Database on Azure   │
 │  (Primary Mode)     │         │  (Optional Direct)   │
 └─────────────────────┘         └──────────────────────┘
 ```

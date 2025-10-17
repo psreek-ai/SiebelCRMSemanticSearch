@@ -8,16 +8,18 @@
 
 ## Executive Summary
 
-This document outlines the **5-phase evolution** of the Siebel CRM Semantic Search project. Instead of treating different approaches as alternatives, we recognize that **Oracle 23ai can serve as the foundation for all advanced features**. Each phase builds upon the previous, allowing incremental value delivery while maintaining the robust Oracle 23ai infrastructure.
+This document outlines the **5-phase evolution** of the Siebel CRM Semantic Search project. Instead of treating different approaches as alternatives, we recognize that **Oracle Autonomous Database on Azure can serve as the foundation for all advanced features**. Each phase builds upon the previous, allowing incremental value delivery while maintaining the robust, managed database infrastructure.
 
-**Key Insight:** Oracle 23ai's vector database capabilities provide the perfect foundation to add LLM reasoning, microservices architecture, agent-based intelligence, hybrid search, and graph-based patterns - all while keeping your data secure and centralized.
+**Key Insight:** Oracle Autonomous Database's AI vector search capabilities, combined with its managed service advantages, provide the perfect foundation to add LLM reasoning, microservices architecture, agent-based intelligence, hybrid search, and graph-based patterns - all while keeping your data secure and centralized. The serverless, auto-scaling nature of Autonomous Database accelerates feature delivery by eliminating infrastructure management overhead.
+
+**Managed Service Advantage:** Starting with Oracle Autonomous Database on Azure dramatically accelerates the roadmap execution. Features like automatic scaling, self-patching, and built-in high availability free up development resources to focus on business value rather than infrastructure management. The low-latency Azure-OCI interconnect via ODSA ensures optimal performance for all future enhancements.
 
 ---
 
 ## Table of Contents
 
 1. [Phase 0: Foundation (Current Implementation)](#phase-0-foundation-current-implementation)
-2. [Phase 1: Enhanced RAG with Oracle 23ai (3-6 months)](#phase-1-enhanced-rag-with-oracle-23ai-3-6-months)
+2. [Phase 1: Enhanced RAG with Autonomous Database (3-6 months)](#phase-1-enhanced-rag-with-oracle-autonomous-database-3-6-months)
 3. [Phase 2: Hybrid Architecture with Microservices (6-12 months)](#phase-2-hybrid-architecture-with-microservices-6-12-months)
 4. [Phase 3: Agent-Based Intelligence Layer (12-18 months)](#phase-3-agent-based-intelligence-layer-12-18-months)
 5. [Phase 4: Advanced Hybrid Search (18-24 months)](#phase-4-advanced-hybrid-search-18-24-months)
@@ -38,27 +40,49 @@ This document outlines the **5-phase evolution** of the Siebel CRM Semantic Sear
 ### Architecture
 
 ```
-Siebel 12c ──(DB Link)──> Oracle 23ai ──(DBMS_CLOUD)──> OCI Generative AI
-                              │                              │
-                              │                              ↓
-                              │                         Embeddings (1024-dim)
-                              ↓
-                      HNSW Vector Index
-                      SIEBEL_KNOWLEDGE_VECTORS
+                    ┌─────────────────────┐
+                    │   Azure VNet        │
+                    │  ┌──────────────┐   │
+                    │  │ Siebel 12c   │   │
+                    │  │   VM         │   │
+                    │  └──────┬───────┘   │
+                    └─────────┼───────────┘
+                              │
+                    (VNet Peering/DB Link)
                               │
                               ↓
-                          ORDS API ←──── Siebel Open UI
-                    (PL/SQL procedures)
+           ┌──────────────────────────────────────────┐
+           │  Oracle Autonomous Database on Azure     │
+           │  (via ODSA - Private Interconnect)       │
+           │                                           │
+           │  ┌────────────────────────────────────┐  │
+           │  │  HNSW Vector Index                 │  │
+           │  │  SIEBEL_KNOWLEDGE_VECTORS          │  │
+           │  └────────────────────────────────────┘  │
+           │           │                               │
+           │           │  ──(DBMS_CLOUD)──> OCI Generative AI
+           │           │                       (Embeddings 1024-dim)
+           │           ↓                               │
+           │  ┌────────────────────────────────────┐  │
+           │  │  Pre-configured ORDS API           │  │
+           │  │  (PL/SQL procedures)               │  │
+           │  └────────────────────────────────────┘  │
+           └──────────────────┬───────────────────────┘
+                              │
+                              ↓
+                      Siebel Open UI
 ```
 
 ### Capabilities
 
-✅ **Vector similarity search** using Oracle 23ai HNSW index  
-✅ **Direct database-to-database** extraction via database links  
-✅ **PL/SQL-based embedding generation** with OCI Generative AI  
-✅ **ORDS-hosted REST API** for Siebel integration  
+✅ **Vector similarity search** using Oracle Autonomous Database HNSW index  
+✅ **Direct database-to-database** extraction via database links over private Azure-OCI interconnect  
+✅ **PL/SQL-based embedding generation** with OCI Generative AI (via DBMS_CLOUD)  
+✅ **Pre-configured ORDS REST API** for Siebel integration (no manual setup required)  
 ✅ **Frequency-based catalog aggregation**  
 ✅ **Basic monitoring** via API_SEARCH_LOG table  
+✅ **Automatic scaling and high availability** through managed service  
+✅ **Self-patching and self-tuning** eliminating DBA maintenance overhead  
 
 ### Limitations
 
@@ -78,19 +102,23 @@ Siebel 12c ──(DB Link)──> Oracle 23ai ──(DBMS_CLOUD)──> OCI Gene
 
 ---
 
-## Phase 1: Enhanced RAG with Oracle 23ai (3-6 months)
+## Phase 1: Enhanced RAG with Oracle Autonomous Database (3-6 months)
 
-### 🎯 Goal: Add LLM reasoning layer while keeping Oracle 23ai as the vector store
+### 🎯 Goal: Add LLM reasoning layer while leveraging Autonomous Database as the vector store
 
 ### Overview
 
-**Duration:** 3-6 months  
+**Duration:** 3-6 months (potentially shorter due to managed infrastructure)  
 **Investment:** $100K (8 weeks × 2 developers)  
 **Value Delivered:** Intelligent explanations, improved relevance, better user experience
 
 ### Key Insight
 
-Oracle 23ai becomes your **RAG database** - the "retrieval" part of Retrieval-Augmented Generation. The vector search happens in Oracle (fast, secure), then results are enhanced with LLM reasoning.
+Oracle Autonomous Database becomes your **RAG database** - the "retrieval" part of Retrieval-Augmented Generation. The vector search happens in Autonomous Database (fast, secure, auto-scaling), then results are enhanced with LLM reasoning.
+
+### Managed Service Advantage
+
+The auto-scaling and self-tuning capabilities of Autonomous Database ensure optimal performance as LLM query volumes increase, without manual intervention. Built-in monitoring and performance analytics accelerate troubleshooting and optimization.
 
 ### Enhanced Architecture
 
@@ -117,15 +145,17 @@ Oracle 23ai becomes your **RAG database** - the "retrieval" part of Retrieval-Au
                          │
           ┌──────────────┴──────────────┐
           ↓                             ↓
-┌─────────────────────┐       ┌─────────────────────────┐
-│  Oracle 23ai        │       │  OCI Generative AI      │
-│  Vector Database    │       │  (GPT-4 via DBMS_CLOUD) │
-│                     │       │                         │
-│  - HNSW Index       │       │  - Query Understanding  │
-│  - 10M+ vectors     │       │  - Result Explanation   │
-│  - <100ms search    │       │  - Recommendation Logic │
-│  - Secure, on-prem  │       │  - Natural Language Gen │
-└─────────────────────┘       └─────────────────────────┘
+┌──────────────────────────┐       ┌─────────────────────────┐
+│  Oracle Autonomous DB    │       │  OCI Generative AI      │
+│  on Azure                │       │  (GPT-4 via DBMS_CLOUD) │
+│  Vector Database         │       │                         │
+│                          │       │  - Query Understanding  │
+│  - HNSW Index            │       │  - Result Explanation   │
+│  - 10M+ vectors          │       │  - Recommendation Logic │
+│  - <100ms search         │       │  - Natural Language Gen │
+│  - Auto-scaling          │       │                         │
+│  - Self-tuning           │       │                         │
+└──────────────────────────┘       └─────────────────────────┘
 ```
 
 ### Implementation: LLM Explainer Function
@@ -218,7 +248,7 @@ CREATE OR REPLACE PROCEDURE GET_SEMANTIC_RECOMMENDATIONS_ENHANCED(
     v_explanation CLOB;
     v_final_response CLOB;
 BEGIN
-    -- Step 1: Always do fast vector search in Oracle 23ai
+    -- Step 1: Always do fast vector search in Autonomous Database
     v_vector_results := GET_SEMANTIC_RECOMMENDATIONS(p_query_text, p_top_k);
     
     -- Step 2: Decide if LLM enhancement is needed
@@ -358,7 +388,7 @@ END;
 
 ### Benefits of Phase 1
 
-✅ **Keep Oracle 23ai as foundation** - No migration needed  
+✅ **Keep Autonomous Database as foundation** - No migration needed  
 ✅ **Selective LLM usage** - Only 20% of queries need it  
 ✅ **Cost-effective** - $7K/year vs $73K (with caching)  
 ✅ **Backward compatible** - Old endpoint still works  
@@ -391,9 +421,9 @@ END;
 
 ---
 
-## Phase 2: Microservices Architecture with Oracle 23ai Core (6-12 months)
+## Phase 2: Microservices Architecture with Autonomous Database Core (6-12 months)
 
-### �� Goal: Modular, scalable services while Oracle 23ai remains the central data store
+### 🎯 Goal: Modular, scalable services while Autonomous Database remains the central data store
 
 ### Overview
 
@@ -403,7 +433,7 @@ END;
 
 ### Key Insight
 
-Break the monolithic ORDS API into specialized microservices, but **keep Oracle 23ai as the single source of truth** for all vector data and analytics. Services can be written in different languages and scaled independently.
+Break the monolithic ORDS API into specialized microservices, but **keep Oracle Autonomous Database as the single source of truth** for all vector data and analytics. Services can be written in different languages and scaled independently, while the managed database handles auto-scaling for the data layer.
 
 ### Enhanced Architecture
 
@@ -425,7 +455,7 @@ Break the monolithic ORDS API into specialized microservices, but **keep Oracle 
      └──────────────┴────────────┴───────────┴─────────┘
                                   │
                     ┌─────────────┴────────────────┐
-                    │       Oracle 23ai            │
+                    │  Oracle Autonomous DB        │
                     │  (Universal Data Platform)   │
                     │                              │
                     │  ┌────────────────────────┐  │
@@ -443,7 +473,7 @@ Break the monolithic ORDS API into specialized microservices, but **keep Oracle 
 
 ### Benefits
 
-✅ **Oracle 23ai still central** - All vector data stays in one database  
+✅ **Autonomous Database still central** - All vector data stays in one managed database  
 ✅ **Independent scaling** - Scale Search Service 10x, Analytics 2x separately  
 ✅ **Polyglot development** - Python for ML, Go for high-perf, Node for dashboards  
 ✅ **Better fault isolation** - Analytics down? Search still works  
@@ -460,7 +490,7 @@ Break the monolithic ORDS API into specialized microservices, but **keep Oracle 
 
 ## Phase 3: Agent-Based Intelligence Layer (12-18 months)
 
-### 🎯 Goal: Add autonomous reasoning agents that use Oracle 23ai as their knowledge base
+### 🎯 Goal: Add autonomous reasoning agents that use Autonomous Database as their knowledge base
 
 ### Overview
 
@@ -473,11 +503,11 @@ Break the monolithic ORDS API into specialized microservices, but **keep Oracle 
 Instead of single-query search, deploy AI agents that can:
 1. **Understand** complex queries
 2. **Plan** multi-step search strategies
-3. **Execute** against Oracle 23ai vectors
+3. **Execute** against Autonomous Database vectors
 4. **Reflect** and refine results
 5. **Learn** from feedback
 
-Oracle 23ai becomes the agent's **memory and knowledge retrieval system**.
+Oracle Autonomous Database becomes the agent's **memory and knowledge retrieval system**.
 
 ### Enhanced Architecture
 
@@ -496,7 +526,7 @@ Oracle 23ai becomes the agent's **memory and knowledge retrieval system**.
                      │
                      ↓
         ┌────────────────────────────┐
-        │    Oracle 23ai            │
+        │  Oracle Autonomous DB     │
         │  (Agent Memory & Tools)   │
         │                           │
         │  Tool: vector_search()    │
@@ -511,7 +541,7 @@ Oracle 23ai becomes the agent's **memory and knowledge retrieval system**.
 User: "My laptop keeps freezing and I lost work, I'm frustrated"
 
 1. **Query Understanding Agent:** Detects urgency + frustration + data loss
-2. **Semantic Search Agent:** Searches Oracle 23ai vectors for "laptop freezing"
+2. **Semantic Search Agent:** Searches Autonomous Database vectors for "laptop freezing"
 3. **Recommendation Refinement Agent:** Adds data recovery service based on "lost work"
 4. **Response:** "I understand your frustration. Recommended: 
    1. Loaner laptop (urgent)
@@ -520,7 +550,7 @@ User: "My laptop keeps freezing and I lost work, I'm frustrated"
 
 ### Benefits
 
-✅ **Oracle 23ai as agent memory** - All knowledge retrieval from vectors  
+✅ **Autonomous Database as agent memory** - All knowledge retrieval from vectors  
 ✅ **Multi-step reasoning** - Complex queries handled intelligently  
 ✅ **Learning from feedback** - Agents improve recommendations over time  
 ✅ **Proactive suggestions** - "You might also need..."  
@@ -535,7 +565,7 @@ User: "My laptop keeps freezing and I lost work, I'm frustrated"
 
 ## Phase 4: Advanced Hybrid Search with Elasticsearch (18-24 months)
 
-### 🎯 Goal: Combine semantic (Oracle 23ai) + keyword (Elasticsearch) for best of both worlds
+### 🎯 Goal: Combine semantic (Autonomous Database) + keyword (Elasticsearch) for best of both worlds
 
 ### Overview
 
@@ -545,7 +575,7 @@ User: "My laptop keeps freezing and I lost work, I'm frustrated"
 
 ### Key Insight
 
-Some queries need exact keyword matching ("SR-12345"), others need semantic understanding ("laptop broken"). **Oracle 23ai handles vectors, Elasticsearch handles keywords**, fuse results for optimal ranking.
+Some queries need exact keyword matching ("SR-12345"), others need semantic understanding ("laptop broken"). **Autonomous Database handles vectors, Elasticsearch handles keywords**, fuse results for optimal ranking.
 
 ### Hybrid Architecture
 
@@ -560,7 +590,8 @@ User Query: "Similar to SR-12345 but for Mac"
         ┌───────────┴──────────────┐
         ↓                          ↓
 ┌──────────────────┐    ┌────────────────────┐
-│ Elasticsearch    │    │  Oracle 23ai       │
+│ Elasticsearch    │    │  Oracle Autonomous │
+│  (Keywords)      │    │  Database (Vectors)│
 │ (Keyword BM25)   │    │  (Vector Semantic) │
 │                  │    │                    │
 │ Match: "SR-12345"│    │ Embedding: "laptop │
@@ -577,7 +608,7 @@ User Query: "Similar to SR-12345 but for Mac"
 
 ### Benefits
 
-✅ **Oracle 23ai for semantics** - Conceptual matching  
+✅ **Autonomous Database for semantics** - Conceptual matching  
 ✅ **Elasticsearch for keywords** - Exact IDs, filters, facets  
 ✅ **Best of both** - 15-20% precision improvement  
 ✅ **Elasticsearch doesn't replace Oracle** - Complementary  
@@ -592,7 +623,7 @@ User Query: "Similar to SR-12345 but for Mac"
 
 ## Phase 5: Knowledge Graph Enhancement with Neo4j (24-30 months)
 
-### 🎯 Goal: Add relationship-based reasoning while Oracle 23ai stores vectors
+### 🎯 Goal: Add relationship-based reasoning while Autonomous Database stores vectors
 
 ### Overview
 
@@ -602,7 +633,7 @@ User Query: "Similar to SR-12345 but for Mac"
 
 ### Key Insight
 
-Some questions need graph traversal: "What services depend on VPN?", "Find all networking-related issues". **Neo4j stores relationships, Oracle 23ai stores vectors**. Query both for complete intelligence.
+Some questions need graph traversal: "What services depend on VPN?", "Find all networking-related issues". **Neo4j stores relationships, Autonomous Database stores vectors**. Query both for complete intelligence.
 
 ### Knowledge Graph Architecture
 
@@ -617,7 +648,8 @@ User Query: "All services affected when VPN is down"
         ┌───────────┴──────────────┐
         ↓                          ↓
 ┌──────────────────┐    ┌────────────────────┐
-│ Neo4j            │    │  Oracle 23ai       │
+│ Neo4j            │    │  Oracle Autonomous │
+│  (Relationships) │    │  Database (Vectors)│
 │ (Relationships)  │    │  (Vector Content)  │
 │                  │    │                    │
 │ MATCH (s:Service)│    │ Semantic search    │

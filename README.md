@@ -5,20 +5,29 @@
 ## 1. Overview
 This project replaces the legacy keyword-based service catalog search in Siebel CRM with a modern, AI-powered semantic search engine. The solution understands the user's intent behind natural language queries, analyzes historical service request data, and provides intelligent, relevant recommendations for service catalog items. This significantly improves search accuracy, reduces request miscategorization, and enhances the overall user experience.
 
-The architecture is built on the Oracle ecosystem, leveraging Oracle Database 23ai for its powerful AI Vector Search capabilities and ORDS (Oracle REST Data Services) for creating a high-performance, database-native API.
+The architecture is built on the Oracle ecosystem, leveraging **Oracle Autonomous Database on Azure** for its powerful AI Vector Search capabilities with the added benefits of a fully managed PaaS solution. The managed service approach delivers enterprise-grade performance and security while significantly reducing administrative overhead. ORDS (Oracle REST Data Services) comes pre-configured within Autonomous Database, enabling rapid deployment of a high-performance, database-native API.
 
 ## 2. Key Features
 - **Natural Language Understanding:** Interprets the *meaning* and *intent* of user queries, not just keywords.
 - **High-Relevance Recommendations:** Uses vector similarity search to find the most relevant historical service requests and suggests the most appropriate catalog items.
-- **Scalable Architecture:** Designed to handle millions of historical records and a high volume of concurrent users.
-- **Secure & Performant:** Leverages Oracle's enterprise-grade security and co-locates the API logic with the data for minimal latency.
+- **Managed Service Architecture:** Built on Oracle Autonomous Database on Azure, providing:
+  - Automatic scaling based on workload demands
+  - Self-patching and self-tuning capabilities
+  - Built-in high availability (99.95% SLA)
+  - Reduced operational overhead and total cost of ownership
+- **Rapid Deployment:** Pre-configured ORDS eliminates manual API server setup, accelerating time-to-production.
+- **Secure & Performant:** 
+  - Enterprise-grade security with automatic encryption and threat detection
+  - Low-latency private interconnect between Azure and OCI via ODSA
+  - API logic co-located with data for optimal performance
 - **Seamless Siebel Integration:** Integrates directly into the Siebel Open UI, providing a modern search experience without leaving the application.
 
 ## 3. High-Level Architecture
 The solution consists of two main flows:
 
-1.  **Offline Indexing:** A batch process extracts historical data from the Siebel database, converts text narratives into numerical vectors (embeddings) using the OCI Generative AI service, and stores them in an Oracle 23ai vector index.
-2.  **Real-Time Search:** The Siebel UI calls a secure ORDS REST endpoint hosted directly in the database. A PL/SQL procedure converts the user's query to a vector, performs a similarity search against the index, and returns a ranked list of catalog recommendations.
+1.  **Offline Indexing:** A batch process extracts historical data from the Siebel database, converts text narratives into numerical vectors (embeddings) using the OCI Generative AI service, and stores them in an Oracle Autonomous Database vector index. The private Azure-OCI interconnect ensures secure, high-performance data transfer.
+
+2.  **Real-Time Search:** The Siebel UI calls a secure ORDS REST endpoint that's pre-configured within Autonomous Database. A PL/SQL procedure converts the user's query to a vector, performs a similarity search against the index, and returns a ranked list of catalog recommendations. The managed ORDS infrastructure ensures high availability and automatic scaling.
 
 ![Architecture Diagram](docs/images/architecture_diagram.png) 
 *(Note: Image link is a placeholder for the actual diagram file which should be added to the repository)*

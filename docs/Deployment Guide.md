@@ -5,24 +5,26 @@
 **Audience:** Deployment Team, Database Administrators, System Administrators, Siebel Administrators
 
 ## 1. Introduction
-This guide provides a comprehensive, step-by-step process for deploying the AI-Powered Semantic Search solution into a target environment (DEV, UAT, or Production). This deployment uses Oracle Database 23ai, ORDS, and Siebel CRM. **Follow these steps in the exact sequence specified.**
+This guide provides a comprehensive, step-by-step process for deploying the AI-Powered Semantic Search solution into a target environment (DEV, UAT, or Production). This deployment uses **Oracle Autonomous Database on Azure** (provisioned through Oracle Database Service for Azure - ODSA), and Siebel CRM. The managed nature of Autonomous Database significantly simplifies deployment by eliminating manual database configuration and ORDS installation steps. **Follow these steps in the exact sequence specified.**
 
 ## 2. Pre-Deployment Checklist
 
 ### 2.1. Infrastructure Requirements
 
-**Oracle Database 23ai:**
-- [ ] Oracle Database 23ai Enterprise Edition installed and running
-- [ ] Minimum 100GB free space in USERS tablespace
-- [ ] SGA minimum 8GB, PGA minimum 4GB
-- [ ] Network connectivity to Oracle 12c Siebel database
-- [ ] Network connectivity to OCI Generative AI endpoints
-- [ ] ORDS 23.x installed and configured
+**Oracle Autonomous Database on Azure:**
+- [ ] Azure subscription with appropriate permissions to provision ODSA resources
+- [ ] Oracle Cloud Infrastructure (OCI) account linked to Azure subscription via ODSA
+- [ ] Autonomous Database instance provisioned (Data Warehouse workload type recommended)
+- [ ] Minimum 1 OCPU allocated (scales automatically based on workload)
+- [ ] Minimum 1TB storage allocated (auto-scales as needed)
+- [ ] Private endpoint configured for secure connectivity to Azure VNet
+- [ ] Network connectivity from Autonomous Database to Oracle 12c Siebel database (via VNet peering or VPN)
+- [ ] ORDS is pre-configured and enabled (no manual installation required)
 
 **Oracle Database 12c (Siebel):**
 - [ ] Read-only user account created with access to Siebel schema
-- [ ] Listener configured and accessible from Oracle 23ai server
-- [ ] Network firewall rules allow connections from Oracle 23ai
+- [ ] Listener configured and accessible from Autonomous Database (via VNet peering)
+- [ ] Network firewall rules allow connections from Autonomous Database subnet
 
 **OCI Account:**
 - [ ] OCI account with access to Generative AI service
@@ -41,10 +43,18 @@ This guide provides a comprehensive, step-by-step process for deploying the AI-P
 Create a deployment configuration document with these values:
 
 ```
-# Oracle 23ai Database
-DB_23AI_HOST=<hostname>
-DB_23AI_PORT=1521
-DB_23AI_SERVICE=<service_name>
+# Oracle Autonomous Database on Azure
+ADB_INSTANCE_NAME=<autonomous_db_name>
+ADB_ADMIN_PASSWORD=<secure_admin_password>
+ADB_SERVICE_NAME=<service_name>_high  # Use _high for best performance
+ADB_ORDS_URL=https://<unique_id>-<db_name>.adb.<region>.oraclecloudapps.com/ords/
+ADB_WALLET_PATH=<path_to_downloaded_wallet>
+ADB_CONNECTION_STRING=<from_wallet_tnsnames.ora>
+
+# Azure Networking
+AZURE_VNET_NAME=<vnet_name>
+AZURE_SUBNET_NAME=<subnet_name>
+ADB_PRIVATE_ENDPOINT=<private_endpoint_name>
 
 # Oracle 12c Siebel Database
 DB_12C_HOST=<hostname>
@@ -61,11 +71,6 @@ OCI_PRIVATE_KEY=<path_to_private_key>
 OCI_COMPARTMENT_OCID=ocid1.compartment.oc1..aaaaaaaa...
 OCI_REGION=us-ashburn-1
 
-# ORDS Configuration
-ORDS_PORT=8080
-ORDS_PROTOCOL=http
-ORDS_HOST=<hostname_or_ip>
-
 # Siebel Configuration
 SIEBEL_WEB_ROOT=<path_to_siebsrvr/public/enu/files>
 SIEBEL_SRF_PATH=<path_to_siebsrvr/objects>
@@ -79,23 +84,72 @@ API_KEY=<generate_secure_api_key>
 
 ## 3. Deployment Phases
 
-## Phase 1: Oracle 23ai Database Setup
+## Phase 1: Provision and Configure Oracle Autonomous Database
 
-**Duration:** 2-3 hours  
-**Executor:** Database Administrator  
-**Rollback Time:** < 30 minutes
+**Duration:** 1-2 hours (significantly reduced due to managed service)  
+**Executor:** Cloud Administrator / Database Administrator  
+**Rollback Time:** < 15 minutes
 
-### Step 1.1: Create Database User and Grant Privileges
+### Step 1.1: Provision Oracle Autonomous Database via Azure Portal
+
+**Navigate to Oracle Database Service for Azure (ODSA) in Azure Portal:**
+
+1. In Azure Portal, search for "Oracle Database@Azure"
+2. Click **+ Create** to start provisioning a new Autonomous Database
+3. Configure the instance with the following settings:
+
+**Basic Configuration:**
+```
+Subscription: <your_azure_subscription>
+Resource Group: <create_new_or_select_existing>
+Region: <select_azure_region_with_odsa_support>
+Database Name: semantic-search-adb
+Display Name: Semantic Search Vector Database
+Workload Type: Data Warehouse  (optimized for analytics and vector search)
+Database Version: 19c or later (supports AI Vector Search)
+Deployment Type: Serverless
+```
+
+**Compute and Storage:**
+```
+OCPU Count: 1 (auto-scales based on workload)
+Storage (TB): 1 (auto-expands as needed)
+Auto Scaling: Enabled
+```
+
+**Networking:**
+```
+Network Access Type: Private endpoint access
+Virtual Network: <select_your_azure_vnet>
+Subnet: <select_subnet_with_connectivity_to_siebel>
+```
+
+**Administrator Credentials:**
+```
+Administrator Username: ADMIN (default)
+Administrator Password: <create_strong_password>
+Confirm Password: <confirm_password>
+```
+
+4. Click **Review + Create**, then **Create**
+5. Wait for deployment to complete (typically 5-10 minutes)
+
+**Post-Provisioning:**
+- Download the **Connection Wallet** from the Azure Portal (contains connection strings and certificates)
+- Note the **ORDS URL** - it's pre-configured and displayed in the database details
+
+### Step 1.2: Connect to Autonomous Database and Create Application Schema
 
 ```sql
--- Connect as SYSDBA
-sqlplus / as sysdba
+-- Connect as ADMIN user using SQL*Plus or SQL Developer
+-- Use the connection string from the wallet (service with _high suffix for best performance)
+sqlplus ADMIN/<password>@<service_name>_high
 
--- Create user
+-- Create application user
 CREATE USER SEMANTIC_SEARCH IDENTIFIED BY "<SecurePassword123!>"
-  DEFAULT TABLESPACE USERS
+  DEFAULT TABLESPACE DATA
   TEMPORARY TABLESPACE TEMP
-  QUOTA UNLIMITED ON USERS;
+  QUOTA UNLIMITED ON DATA;
 
 -- Grant basic privileges
 GRANT CREATE SESSION TO SEMANTIC_SEARCH;
@@ -105,22 +159,12 @@ GRANT CREATE PROCEDURE TO SEMANTIC_SEARCH;
 GRANT CREATE SEQUENCE TO SEMANTIC_SEARCH;
 GRANT CREATE JOB TO SEMANTIC_SEARCH;
 
--- Grant DBMS_CLOUD privileges for OCI API calls
+-- Grant DBMS_CLOUD privileges for OCI API calls (pre-configured in ADB)
 GRANT EXECUTE ON DBMS_CLOUD TO SEMANTIC_SEARCH;
 GRANT EXECUTE ON DBMS_CLOUD_AI TO SEMANTIC_SEARCH;
 
--- Configure Network ACL for OCI API access
-BEGIN
-  DBMS_NETWORK_ACL_ADMIN.APPEND_HOST_ACE(
-    host => '*.oraclecloud.com',
-    ace  => xs$ace_type(
-      privilege_list => xs$name_list('http', 'connect', 'resolve'),
-      principal_name => 'SEMANTIC_SEARCH',
-      principal_type => xs_acl.ptype_db
-    )
-  );
-END;
-/
+-- Note: Network ACLs for OCI services are pre-configured in Autonomous Database
+-- No manual ACL configuration needed for *.oraclecloud.com
 
 COMMIT;
 
@@ -133,64 +177,95 @@ WHERE username = 'SEMANTIC_SEARCH';
 **Verification:**
 ```sql
 -- Connect as SEMANTIC_SEARCH
-connect SEMANTIC_SEARCH/<password>@<service_name>
+connect SEMANTIC_SEARCH/<password>@<service_name>_high
 
 -- Test privileges
 SELECT * FROM session_privs;
 -- Expected: CREATE SESSION, CREATE TABLE, CREATE PROCEDURE, etc.
+
+-- Verify ORDS is enabled (pre-configured)
+SELECT * FROM user_ords_schemas;
+-- May return no rows initially, will enable in Phase 3
 ```
 
-### Step 1.2: Create Database Link to Oracle 12c
+### Step 1.3: Configure Network Connectivity to Oracle 12c Siebel Database
 
-```bash
-# First, configure TNS entry
-vi $ORACLE_HOME/network/admin/tnsnames.ora
+**Important:** Autonomous Database requires secure network connectivity to access the Oracle 12c database on Azure VM.
 
-# Add entry:
-SIEBEL_12C_DB =
-  (DESCRIPTION =
-    (ADDRESS = (PROTOCOL = TCP)(HOST = <DB_12C_HOST>)(PORT = 1521))
-    (CONNECT_DATA =
-      (SERVER = DEDICATED)
-      (SERVICE_NAME = <DB_12C_SERVICE>)
-    )
-  )
+**Option A: VNet Peering (Recommended for Azure-to-Azure connectivity)**
 
-# Test TNS connectivity
-tnsping SIEBEL_12C_DB
+1. Configure Azure VNet peering between:
+   - The VNet where Autonomous Database private endpoint resides
+   - The VNet where Oracle 12c VM resides
+
+2. Update Network Security Groups (NSGs) to allow traffic:
 ```
+Source: Autonomous Database subnet CIDR
+Destination: Oracle 12c VM IP address
+Port: 1521
+Protocol: TCP
+```
+
+**Option B: VPN Gateway (For secure connectivity across regions)**
+
+1. Set up Azure VPN Gateway
+2. Configure site-to-site VPN between VNets
+3. Update route tables to direct traffic appropriately
+
+### Step 1.4: Create Database Link to Oracle 12c
+
+**Note:** In Autonomous Database, TNS entries are managed differently. Use a full connection string.
 
 ```sql
 -- Connect as SEMANTIC_SEARCH
-sqlplus SEMANTIC_SEARCH/<password>@<service_name>
+sqlplus SEMANTIC_SEARCH/<password>@<service_name>_high
 
--- Create database link
+-- Create database link using full connection descriptor
 CREATE DATABASE LINK SIEBEL_12C_LINK
   CONNECT TO siebel_readonly IDENTIFIED BY "<password>"
-  USING 'SIEBEL_12C_DB';
+  USING '(DESCRIPTION =
+           (ADDRESS = (PROTOCOL = TCP)(HOST = <DB_12C_HOST>)(PORT = 1521))
+           (CONNECT_DATA =
+             (SERVER = DEDICATED)
+             (SERVICE_NAME = <DB_12C_SERVICE>)
+           )
+         )';
 
 -- Test database link
 SELECT COUNT(*) FROM SIEBEL.S_SRV_REQ@SIEBEL_12C_LINK;
 -- Expected: A number (e.g., 1500000)
+
+-- Verify connectivity to key tables
+SELECT 'S_SRV_REQ' AS TABLE_NAME, COUNT(*) AS ROW_COUNT FROM SIEBEL.S_SRV_REQ@SIEBEL_12C_LINK
+UNION ALL
+SELECT 'S_ORDER', COUNT(*) FROM SIEBEL.S_ORDER@SIEBEL_12C_LINK
+UNION ALL
+SELECT 'S_EVT_ACT', COUNT(*) FROM SIEBEL.S_EVT_ACT@SIEBEL_12C_LINK;
 ```
 
 **Troubleshooting:**
-- If ORA-12154: Check tnsnames.ora syntax
-- If ORA-01017: Verify username/password
-- If ORA-12541: Check Oracle 12c listener status
+- **ORA-12154**: Check connection string syntax in database link definition
+- **ORA-01017**: Verify siebel_readonly username/password
+- **ORA-12541**: Verify network connectivity between ADB and Oracle 12c VM
+  - Check NSG rules on Oracle 12c VM
+  - Verify VNet peering status
+  - Confirm Oracle 12c listener is running: `lsnrctl status`
+- **ORA-12170**: Check if firewall is blocking port 1521
 
-### Step 1.3: Execute TDD 1 Scripts
+### Step 1.5: Execute TDD 1 Scripts
 
-Follow **TDD 1** completely:
+Follow **TDD 1** completely (updated for Autonomous Database):
 
 ```sql
--- Connect as SEMANTIC_SEARCH
--- Execute all scripts from TDD 1 in sequence:
+-- Connect as SEMANTIC_SEARCH using the _high service for best performance
+sqlplus SEMANTIC_SEARCH/<password>@<service_name>_high
 
 -- 1. Create staging tables (Step 2.2)
 @create_staging_tables.sql
 
 -- 2. Copy data from 12c (Step 3.1)
+-- Note: This may take longer due to cross-network data transfer
+-- Consider running during off-peak hours
 @copy_data_from_12c.sql
 
 -- 3. Create views (Step 4)
@@ -203,6 +278,7 @@ Follow **TDD 1** completely:
 @create_refresh_procedure.sql
 
 -- 6. Schedule refresh job (Step 6.2)
+-- Note: Autonomous Database automatically manages job scheduling
 @schedule_refresh_job.sql
 
 -- Verify completion
@@ -213,6 +289,8 @@ SELECT 'SIEBEL_NARRATIVES_STAGING', COUNT(*) FROM SIEBEL_NARRATIVES_STAGING;
 ```
 
 **Expected Duration:** 30-60 minutes for initial data load
+
+**Performance Note:** The private, high-speed interconnect between Azure and OCI via ODSA ensures optimal data transfer performance.
 
 ---
 
@@ -326,52 +404,46 @@ END;
 
 ---
 
-## Phase 3: ORDS API Deployment
+## Phase 3: ORDS API Configuration
 
-**Duration:** 1 hour  
+**Duration:** 30 minutes (significantly reduced - ORDS is pre-installed!)  
 **Executor:** Database Administrator  
-**Rollback Time:** < 15 minutes
+**Rollback Time:** < 10 minutes
 
-### Step 3.1: Install and Configure ORDS
+**Key Advantage:** Oracle Autonomous Database includes Oracle REST Data Services (ORDS) pre-installed, pre-configured, and ready to use. This eliminates the need for manual ORDS installation, configuration, and maintenance.
 
-```bash
-# Download ORDS
-cd /opt/oracle
-wget https://download.oracle.com/otn_software/java/ords/ords-latest.zip
-unzip ords-latest.zip -d ords
+### Step 3.1: Verify ORDS is Enabled and Accessible
 
-# Configure ORDS
-cd /opt/oracle/ords
-export ORDS_HOME=/opt/oracle/ords
-export PATH=$ORDS_HOME/bin:$PATH
+**No installation required!** ORDS is automatically configured when you provision Autonomous Database.
 
-# Run installation
-ords install
+```sql
+-- Connect as ADMIN to verify ORDS configuration
+sqlplus ADMIN/<password>@<service_name>_high
 
-# Enter configuration values when prompted:
-# Database hostname: <DB_23AI_HOST>
-# Database port: 1521
-# Database service: <DB_23AI_SERVICE>
-# Administrator username: SYS
-# Administrator password: <sys_password>
+-- Check ORDS status
+SELECT * FROM DBA_ORDS_SCHEMAS;
+-- This shows which schemas are REST-enabled
 
-# Start ORDS
-ords --config /opt/oracle/ords/config serve &
-
-# Verify ORDS is running
-curl http://localhost:8080/ords/
-# Expected: HTML welcome page
+-- Verify ORDS URL (provided during provisioning)
+-- Format: https://<unique_id>-<db_name>.adb.<region>.oraclecloudapps.com/ords/
 ```
 
-### Step 3.2: Execute TDD 3 Scripts
+**Test ORDS Accessibility:**
+```bash
+# From your local machine or Azure VM, test the ORDS URL
+curl https://<your_adb_ords_url>/ords/
 
-Follow **TDD 3** completely:
+# Expected: HTML response showing ORDS is running
+# OR JSON response with database information
+```
+
+### Step 3.2: Enable SEMANTIC_SEARCH Schema for REST Services
 
 ```sql
 -- Connect as SEMANTIC_SEARCH
-sqlplus SEMANTIC_SEARCH/<password>@<service_name>
+sqlplus SEMANTIC_SEARCH/<password>@<service_name>_high
 
--- 1. Enable schema for ORDS (Step 2.1)
+-- Enable schema for ORDS REST services
 BEGIN
     ORDS.ENABLE_SCHEMA(
         p_enabled             => TRUE,
@@ -384,29 +456,50 @@ BEGIN
 END;
 /
 
--- 2. Create search procedures (Step 3)
+-- Verify schema is REST-enabled
+SELECT name, enabled, url_mapping_type, url_mapping_pattern
+FROM user_ords_schemas;
+
+-- Expected output:
+-- NAME               ENABLED  URL_MAPPING_TYPE  URL_MAPPING_PATTERN
+-- SEMANTIC_SEARCH    TRUE     BASE_PATH         semantic_search
+```
+
+### Step 3.3: Execute TDD 3 Scripts
+
+Follow **TDD 3** (with modifications for Autonomous Database):
+
+```sql
+-- Connect as SEMANTIC_SEARCH
+sqlplus SEMANTIC_SEARCH/<password>@<service_name>_high
+
+-- 1. Schema is already REST-enabled (completed in Step 3.2)
+
+-- 2. Create search procedures (Step 3 from TDD 3)
 @create_search_procedures.sql
 
--- 3. Register ORDS endpoints (Step 4)
+-- 3. Register ORDS endpoints (Step 4 from TDD 3)
 @register_ords_endpoints.sql
 
--- 4. Configure security (Step 6)
+-- 4. Configure security (Step 6 from TDD 3)
 @configure_ords_security.sql
 
--- 5. Create logging (Step 7)
+-- 5. Create logging (Step 7 from TDD 3)
 @create_api_logging.sql
 ```
 
-### Step 3.3: Test API Endpoint
+### Step 3.4: Test API Endpoint
+
+**Note:** Use the HTTPS URL provided by Autonomous Database (ORDS is accessed via HTTPS, not HTTP).
 
 ```bash
-# Test API with curl
+# Test API with curl using the Autonomous Database ORDS URL
 curl -X POST \
   -H "Content-Type: text/plain" \
   -H "X-API-Key: <API_KEY>" \
   -H "Top-K: 5" \
   -d "My computer is running very slow" \
-  http://<ORDS_HOST>:<ORDS_PORT>/ords/semantic_search/siebel/search
+  https://<unique_id>-<db_name>.adb.<region>.oraclecloudapps.com/ords/semantic_search/siebel/search
 
 # Expected output: JSON with recommendations
 {
@@ -419,10 +512,16 @@ curl -X POST \
 # Test error handling
 curl -X POST \
   -H "Content-Type: text/plain" \
-  http://<ORDS_HOST>:<ORDS_PORT>/ords/semantic_search/siebel/search
+  https://<unique_id>-<db_name>.adb.<region>.oraclecloudapps.com/ords/semantic_search/siebel/search
 
-# Expected: Error response
+# Expected: Error response with appropriate message
 ```
+
+**Troubleshooting:**
+- **Connection refused**: Verify the ORDS URL is correct from Azure portal
+- **SSL certificate errors**: Use `-k` flag with curl for testing (not recommended for production)
+- **401 Unauthorized**: Check API key configuration
+- **404 Not Found**: Verify schema is REST-enabled and endpoints are registered
 
 ---
 
@@ -539,7 +638,7 @@ iisreset
 ### 4.1. Database Verification
 
 ```sql
--- Connect to Oracle 23ai
+-- Connect to Oracle Autonomous Database
 sqlplus SEMANTIC_SEARCH/<password>@<service_name>
 
 -- Verify data load

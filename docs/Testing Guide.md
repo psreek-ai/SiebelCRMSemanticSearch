@@ -31,7 +31,7 @@ Before beginning testing, ensure:
 ### 2.3. Test Data Preparation
 
 ```sql
--- Connect to Oracle 23ai as SEMANTIC_SEARCH
+-- Connect to Oracle Autonomous Database as SEMANTIC_SEARCH
 sqlplus SEMANTIC_SEARCH/<password>@<service_name>
 
 -- Verify test data exists
@@ -84,7 +84,7 @@ COMMIT;
 
 ### Test 1.1: Database Link Connectivity
 
-**Objective:** Verify Oracle 23ai can access Oracle 12c
+**Objective:** Verify Oracle Autonomous Database can access Oracle 12c via VNet peering
 
 ```sql
 -- Test 1.1.1: Test database link

@@ -28,7 +28,7 @@ Business Service (eScript)
       ↓
 EAI HTTP Transport Service
       ↓
-ORDS API Endpoint (Oracle 23ai)
+ORDS API Endpoint (Oracle Autonomous Database on Azure)
 ```
 
 ### 3.2. Siebel Objects to Create/Modify
