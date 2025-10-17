@@ -28,7 +28,7 @@ Business Service (eScript)
       ↓
 EAI HTTP Transport Service
       ↓
-ORDS API Endpoint (Oracle Autonomous Database on Azure)
+ORDS API Endpoint (Oracle Oracle 23ai Database on Azure)
 ```
 
 ### 3.2. Siebel Objects to Create/Modify
@@ -921,3 +921,4 @@ Once this TDD is complete:
 - Review **Testing Guide** for comprehensive test scenarios
 - Schedule UAT with business users
 - Plan go-live and rollback procedures
+

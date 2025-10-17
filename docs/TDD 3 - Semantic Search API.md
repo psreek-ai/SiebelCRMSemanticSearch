@@ -1,83 +1,126 @@
 # Technical Design Document 3: Semantic Search API
 
-**Version:** 2.2
-**Date:** 2025-10-17
+**Version:** 3.0  
+**Date:** 2025-10-17  
 **Owner:** Database Development Team
 
 ## 1. Objective
-This document specifies the design and implementation of the RESTful API that provides semantic search functionality. The API is built and hosted directly within **Oracle Autonomous Database on Azure** using the **pre-configured Oracle REST Data Services (ORDS)**, serving as a high-performance, secure endpoint that encapsulates all AI and vector database logic. The managed nature of Autonomous Database eliminates ORDS installation and configuration overhead.
+This document specifies the design and implementation of the RESTful API that provides semantic search functionality. The API is built and hosted directly within **Oracle Database 23ai on Azure VM** using **manually installed Oracle REST Data Services (ORDS)**, serving as a high-performance, secure endpoint that encapsulates all AI and vector database logic. This approach provides full control over ORDS configuration and deployment.
 
 ## 2. Technology Stack
-* **Hosting Platform:** Oracle Autonomous Database on Azure (Serverless)
-* **API Engine:** Built-in Oracle REST Data Services (ORDS) - Pre-installed and Pre-configured
+* **Hosting Platform:** Oracle Database 23ai on Azure VM (Standard_D8s_v3)
+* **API Engine:** Oracle REST Data Services (ORDS) 23.3.0 - Manually installed in standalone Jetty mode
 * **Language:** PL/SQL, SQL with JSON extensions
-* **Security:** OAuth2 / API Keys via ORDS (managed security model)
+* **Security:** API Keys via ORDS custom authentication
+* **Network:** HTTP on port 8080 (internal VNet), HTTPS via Azure Application Gateway (production)
 
 ## 3. Prerequisites
 
 Before implementing this TDD, ensure:
-- ✅ TDD 1 is complete (data extraction and staging)
-- ✅ TDD 2 is complete (vector generation and indexing)
-- ✅ Autonomous Database is provisioned and accessible
-- ✅ **No ORDS installation required** - ORDS comes pre-configured with Autonomous Database!
+- ✅ TDD 1 is complete (data extraction from Oracle 19c Siebel database)
+- ✅ TDD 2 is complete (vector generation via Azure AI Foundry and indexing)
+- ✅ Oracle 23ai Database is installed and running on Azure VM
+- ✅ **ORDS is installed and configured** (completed in Deployment Guide Phase 3)
+- ✅ SEMANTIC_SEARCH schema is enabled for REST services
 
 ---
 
 ## 4. Implementation Steps
 
-### Step 1: Verify ORDS is Available (No Installation Required!)
+### Step 1: Verify ORDS Installation and Accessibility
 
 **Executor:** Database Administrator  
-**Duration:** 5 minutes
+**Duration:** 10 minutes
 
-**🎉 Key Advantage:** Oracle Autonomous Database includes ORDS pre-installed, pre-configured, and ready to use immediately. This eliminates approximately 45 minutes of installation and configuration work!
+**Important:** Unlike Oracle 23ai Database, Oracle 23ai on Azure VM requires manual ORDS installation (completed in Deployment Guide Phase 3). Verify it's properly configured before proceeding.
 
-#### 1.1. Verify ORDS Accessibility
+#### 1.1. Verify ORDS Service Status
 
 ```bash
-# Get the ORDS URL from Azure Portal (Oracle Database@Azure resource details)
-# Format: https://<unique_id>-<db_name>.adb.<region>.oraclecloudapps.com/ords/
+# SSH to Oracle 23ai VM
+ssh oracle@<oracle-23ai-vm-ip>
 
-# Test ORDS is accessible
-curl https://<unique_id>-<db_name>.adb.<region>.oraclecloudapps.com/ords/
+# Check ORDS service status
+sudo systemctl status ords.service
+# Expected: Active: active (running)
 
-# Expected: HTML response showing ORDS information page
+# Verify ORDS is listening on port 8080
+sudo netstat -tuln | grep 8080
+# Expected: tcp 0.0.0.0:8080 LISTEN
+
+# Check ORDS logs for errors
+sudo journalctl -u ords.service -n 50
+# Expected: "ORDS is ready to accept requests"
 ```
 
-#### 1.2. Verify ORDS Configuration in Database
+#### 1.2. Test ORDS Accessibility
+
+```bash
+# Test ORDS from local VM
+curl http://localhost:8080/ords/
+# Expected: HTML response showing ORDS information page
+
+# Test from another VM in same VNet (if available)
+curl http://<oracle-23ai-vm-private-ip>:8080/ords/
+# Expected: Same HTML response
+
+# Test ORDS version endpoint
+curl http://localhost:8080/ords/
+# Look for ORDS version in response
+```
+
+#### 1.3. Verify ORDS Configuration in Database
+
+```bash
+# Connect to Oracle 23ai as SEMANTIC_SEARCH user
+sqlplus SEMANTIC_SEARCH/<password>@localhost:1521/VECSRCH
+```
 
 ```sql
--- Connect as ADMIN user
-sqlplus ADMIN/<password>@<service_name>_high
+-- Check if schema is REST-enabled
+SELECT name, enabled, url_mapping_type, url_mapping_pattern
+FROM user_ords_schemas
+WHERE name = 'SEMANTIC_SEARCH';
 
--- Check ORDS installation status
-SELECT * FROM DBA_ORDS_SCHEMAS;
+-- Expected output:
+-- NAME               ENABLED  URL_MAPPING_TYPE  URL_MAPPING_PATTERN
+-- SEMANTIC_SEARCH    TRUE     BASE_PATH         semantic_search
 
--- Verify ORDS version
-SELECT ORDS_METADATA.ORDS_VERSION FROM DUAL;
--- Expected: 23.x or later
+-- If schema is not enabled, enable it:
+BEGIN
+    ORDS.ENABLE_SCHEMA(
+        p_enabled             => TRUE,
+        p_schema              => 'SEMANTIC_SEARCH',
+        p_url_mapping_type    => 'BASE_PATH',
+        p_url_mapping_pattern => 'semantic_search',
+        p_auto_rest_auth      => FALSE
+    );
+    COMMIT;
+END;
+/
 
--- Check available ORDS procedures
+-- Verify ORDS metadata objects exist
 SELECT object_name, object_type 
 FROM all_objects 
-WHERE owner = 'ORDS' 
-  AND object_type IN ('PACKAGE', 'PROCEDURE')
+WHERE owner = 'ORDS_METADATA'
+  AND object_type IN ('TABLE', 'VIEW')
+  AND rownum <= 10
 ORDER BY object_name;
+
+EXIT;
 ```
 
-**What You DON'T Need to Do:**
-- ❌ Download ORDS software
-- ❌ Install ORDS
-- ❌ Configure ORDS connection pools
-- ❌ Set up ORDS as a system service
-- ❌ Manage ORDS updates and patches
+**ORDS Installation Verification Checklist:**
+- ✅ ORDS service is running (`systemctl status ords.service`)
+- ✅ Port 8080 is listening (`netstat -tuln | grep 8080`)
+- ✅ ORDS responds to HTTP requests (`curl http://localhost:8080/ords/`)
+- ✅ SEMANTIC_SEARCH schema is REST-enabled
+- ✅ ORDS_METADATA and ORDS_PUBLIC_USER schemas exist
+- ✅ No errors in ORDS logs (`/opt/oracle/ords/logs/ords.log`)
 
-**What's Already Configured:**
-- ✅ ORDS is running and managed by Oracle
-- ✅ HTTPS endpoints are configured with SSL certificates
-- ✅ Connection pooling is optimized
-- ✅ Automatic updates and patches are applied
-- ✅ High availability is built-in
+**If ORDS is Not Installed:**
+- Refer to Deployment Guide, Phase 3: Install and Configure ORDS
+- Complete ORDS installation before proceeding with this TDD
 
 ---
 
@@ -116,8 +159,8 @@ FROM user_ords_schemas;
 #### 2.2. Test Schema Accessibility
 
 ```bash
-# Test the schema endpoint using the Autonomous Database ORDS URL
-curl https://<unique_id>-<db_name>.adb.<region>.oraclecloudapps.com/ords/semantic_search/
+# Test the schema endpoint using the Oracle 23ai Database ORDS URL
+curl http://localhost:8080/ords/semantic_search/
 
 # Expected: 404 or empty JSON response (no modules defined yet - this is normal)
 ```
@@ -185,7 +228,7 @@ BEGIN
                 'inputs' VALUE JSON_ARRAY(l_clean_query)
             ) INTO l_oci_req_body FROM DUAL;
             
-            -- Call OCI Generative AI service
+            -- Call Azure AI Foundry service
             l_oci_response := DBMS_CLOUD.SEND_REQUEST(
                 credential_name => 'OCI_GENAI_CREDENTIAL',
                 uri             => l_embedding_url,
@@ -442,12 +485,12 @@ WHERE template_id = (
 #### 5.1. Test with curl
 
 ```bash
-# Test the API endpoint using Autonomous Database ORDS URL
+# Test the API endpoint using Oracle 23ai Database ORDS URL
 curl -X POST \
   -H "Content-Type: text/plain" \
   -H "Top-K: 5" \
   -d "My computer is running very slow" \
-  https://<unique_id>-<db_name>.adb.<region>.oraclecloudapps.com/ords/semantic_search/siebel/search
+  http://localhost:8080/ords/semantic_search/siebel/search
 
 # Expected response:
 # {
@@ -472,7 +515,7 @@ curl -X POST \
 
 1. Open Postman
 2. Create new POST request
-3. URL: `https://<unique_id>-<db_name>.adb.<region>.oraclecloudapps.com/ords/semantic_search/siebel/search`
+3. URL: `http://localhost:8080/ords/semantic_search/siebel/search`
 4. Headers:
    - `Content-Type`: `text/plain`
    - `Top-K`: `5`
@@ -486,7 +529,7 @@ curl -X POST \
 # Test with empty query
 curl -X POST \
   -H "Content-Type: text/plain" \
-  https://<unique_id>-<db_name>.adb.<region>.oraclecloudapps.com/ords/semantic_search/siebel/search
+  http://localhost:8080/ords/semantic_search/siebel/search
 
 # Expected: Error response with appropriate message
 
@@ -495,7 +538,7 @@ curl -X POST \
   -H "Content-Type: text/plain" \
   -H "Top-K: abc" \
   -d "Test query" \
-  https://<unique_id>-<db_name>.adb.<region>.oraclecloudapps.com/ords/semantic_search/siebel/search
+  http://localhost:8080/ords/semantic_search/siebel/search
 
 # Expected: Should default to 5 and return results
 ```
@@ -650,13 +693,13 @@ curl -X POST \
   -H "X-API-Key: YOUR_SECURE_API_KEY_HERE" \
   -H "Top-K: 5" \
   -d "Test query" \
-  https://<unique_id>-<db_name>.adb.<region>.oraclecloudapps.com/ords/semantic_search/siebel/search
+  http://localhost:8080/ords/semantic_search/siebel/search
 
 # Test without API key (should fail)
 curl -X POST \
   -H "Content-Type: text/plain" \
   -d "Test query" \
-  https://<unique_id>-<db_name>.adb.<region>.oraclecloudapps.com/ords/semantic_search/siebel/search
+  http://localhost:8080/ords/semantic_search/siebel/search
 
 # Expected: 401 Unauthorized
 ```
@@ -873,3 +916,4 @@ Once this TDD is complete, proceed to:
 - **TDD 4**: Integrate the API into Siebel CRM Open UI
 - Use the API endpoint URL and authentication details from this setup
 - The API is now ready to be called from Siebel eScript
+

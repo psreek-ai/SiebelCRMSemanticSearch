@@ -29,25 +29,25 @@ The current Siebel CRM Semantic Search architecture is **solid and production-re
 
 ## 1. Critical Issues (P0)
 
-### 🔴 1.1. Single Point of Failure: OCI Embedding Service
+### 🔴 1.1. Single Point of Failure: Azure AI Foundry Embedding Service
 
 **Current State:**
-- Every search query requires a real-time call to OCI Generative AI service
-- If OCI service is down or slow, all searches fail
-- Network latency to OCI adds to response time
+- Every search query requires a real-time call to Azure AI Foundry service
+- If Azure AI Foundry service is down or slow, all searches fail
+- Network latency to Azure AI Foundry adds to response time
 
 **Problem:**
 ```
-User Query → PL/SQL → OCI API Call (network hop) → Embedding → Search
+User Query → PL/SQL → Azure AI Foundry API Call (network hop) → Embedding → Search
                           ↑
                     SINGLE POINT OF FAILURE
 ```
 
 **Risk:**
-- 🔴 **Availability Risk**: OCI service outage = complete search outage
-- 🔴 **Performance Risk**: Network latency to OCI (50-200ms) on every search
+- 🔴 **Availability Risk**: Azure AI Foundry service outage = complete search outage
+- 🔴 **Performance Risk**: Network latency to Azure AI Foundry (50-200ms) on every search
 - 🔴 **Cost Risk**: Pay-per-call pricing for every single search query
-- 🔴 **Rate Limiting**: OCI may throttle high-volume usage
+- 🔴 **Rate Limiting**: Azure AI Foundry may throttle high-volume usage
 
 **Recommended Solution:**
 
@@ -56,7 +56,7 @@ User Query → PL/SQL → OCI API Call (network hop) → Embedding → Search
 CREATE TABLE QUERY_VECTOR_CACHE (
     query_hash VARCHAR2(64) PRIMARY KEY,
     query_text VARCHAR2(4000),
-    query_vector VECTOR(1024, FLOAT64),
+    query_vector VECTOR(1536, FLOAT32),
     hit_count NUMBER DEFAULT 0,
     created_date TIMESTAMP,
     last_accessed TIMESTAMP,
@@ -70,7 +70,7 @@ CREATE OR REPLACE PROCEDURE GET_SEMANTIC_RECOMMENDATIONS_CACHED(
     p_query_text IN VARCHAR2,
     p_top_k IN NUMBER DEFAULT 5
 ) AS
-    v_query_vector VECTOR(1024, FLOAT64);
+    v_query_vector VECTOR(1536, FLOAT32);
     v_cache_hit BOOLEAN := FALSE;
 BEGIN
     -- Try cache first
@@ -89,8 +89,8 @@ BEGIN
         
     EXCEPTION
         WHEN NO_DATA_FOUND THEN
-            -- Cache miss - call OCI
-            v_query_vector := GENERATE_EMBEDDING_VIA_OCI(p_query_text);
+            -- Cache miss - call Azure AI Foundry
+            v_query_vector := GENERATE_EMBEDDING_VIA_AZURE_AI_FOUNDRY(p_query_text);
             
             -- Store in cache
             INSERT INTO QUERY_VECTOR_CACHE (query_text, query_vector, created_date, last_accessed)
@@ -106,8 +106,8 @@ END;
 **Benefits:**
 - ✅ 90%+ cache hit rate for common queries (e.g., "laptop broken", "password reset")
 - ✅ Response time drops from 1-2s to 100-300ms for cached queries
-- ✅ Reduced OCI API costs by 90%+
-- ✅ Resilience to OCI outages for cached queries
+- ✅ Reduced Azure AI Foundry API costs by 90%+
+- ✅ Resilience to Azure AI Foundry outages for cached queries
 
 **Implementation Effort:** 2-3 days  
 **Impact:** 🟢 **HIGH** - Dramatic performance and cost improvement
@@ -115,22 +115,22 @@ END;
 ---
 
 **Option B: Local Embedding Model** (Future consideration)
-- Deploy Cohere embedding model locally (requires GPU infrastructure)
-- Eliminates dependency on OCI
+- Deploy OpenAI embedding model locally (requires GPU infrastructure)
+- Eliminates dependency on Azure AI Foundry
 - Higher infrastructure cost but better control
 
 ---
 
-### 🔴 1.2. No Circuit Breaker Pattern for OCI Calls
+### 🔴 1.2. No Circuit Breaker Pattern for Azure AI Foundry Calls
 
 **Current State:**
-- If OCI service becomes slow, all queries wait indefinitely
+- If Azure AI Foundry service becomes slow, all queries wait indefinitely
 - No timeout configuration documented
 - No fallback mechanism
 
 **Problem:**
 ```
-100 concurrent users → All call OCI → OCI slow (10s response)
+100 concurrent users → All call Azure AI Foundry → Service slow (10s response)
                           ↓
                     All users wait 10 seconds
                     Database connections pile up
@@ -141,7 +141,7 @@ END;
 
 ```sql
 -- Add circuit breaker state table
-CREATE TABLE OCI_CIRCUIT_BREAKER (
+CREATE TABLE AZURE_AI_CIRCUIT_BREAKER (
     service_name VARCHAR2(50) PRIMARY KEY,
     state VARCHAR2(20) DEFAULT 'CLOSED',  -- CLOSED, OPEN, HALF_OPEN
     failure_count NUMBER DEFAULT 0,
@@ -151,8 +151,8 @@ CREATE TABLE OCI_CIRCUIT_BREAKER (
 );
 
 -- Initialize
-INSERT INTO OCI_CIRCUIT_BREAKER (service_name, state) 
-VALUES ('OCI_EMBEDDING', 'CLOSED');
+INSERT INTO AZURE_AI_CIRCUIT_BREAKER (service_name, state) 
+VALUES ('AZURE_AI_EMBEDDING', 'CLOSED');
 
 -- Modified embedding function with circuit breaker
 CREATE OR REPLACE FUNCTION GENERATE_EMBEDDING_WITH_CB(
@@ -165,8 +165,8 @@ CREATE OR REPLACE FUNCTION GENERATE_EMBEDDING_WITH_CB(
 BEGIN
     -- Check circuit breaker state
     SELECT state INTO v_circuit_state
-    FROM OCI_CIRCUIT_BREAKER
-    WHERE service_name = 'OCI_EMBEDDING';
+    FROM AZURE_AI_CIRCUIT_BREAKER
+    WHERE service_name = 'AZURE_AI_EMBEDDING';
     
     IF v_circuit_state = 'OPEN' THEN
         -- Circuit is open, check if we should try again
@@ -174,8 +174,8 @@ BEGIN
             v_opened_at TIMESTAMP;
         BEGIN
             SELECT opened_at INTO v_opened_at
-            FROM OCI_CIRCUIT_BREAKER
-            WHERE service_name = 'OCI_EMBEDDING';
+            FROM AZURE_AI_CIRCUIT_BREAKER
+            WHERE service_name = 'AZURE_AI_EMBEDDING';
             
             -- Wait 60 seconds before half-open
             IF SYSTIMESTAMP - v_opened_at < INTERVAL '60' SECOND THEN
@@ -191,23 +191,23 @@ BEGIN
         END;
     END IF;
     
-    -- Try OCI call with timeout
+    -- Try Azure AI Foundry call with timeout
     BEGIN
         -- Set timeout using UTL_HTTP timeout parameters
         v_response := DBMS_CLOUD.SEND_REQUEST(
-            credential_name => 'OCI_GENAI_CREDENTIAL',
-            uri => 'https://inference.generativeai.us-ashburn-1.oci.oraclecloud.com/...',
+            credential_name => 'AZURE_AI_FOUNDRY_CRED',
+            uri => 'https://<workspace-name>.<region>.api.azureml.ms/openai/deployments/text-embedding-3-small/embeddings?api-version=2024-02-01',
             method => 'POST',
-            body => UTL_RAW.CAST_TO_RAW('{"inputs":["' || p_text || '"]}')
+            body => UTL_RAW.CAST_TO_RAW('{"input":"' || p_text || '"}')
             -- Note: Add timeout configuration
         );
         
         -- Success - reset circuit breaker
-        UPDATE OCI_CIRCUIT_BREAKER
+        UPDATE AZURE_AI_CIRCUIT_BREAKER
         SET state = 'CLOSED',
             failure_count = 0,
             last_success = SYSTIMESTAMP
-        WHERE service_name = 'OCI_EMBEDDING';
+        WHERE service_name = 'AZURE_AI_EMBEDDING';
         COMMIT;
         
         RETURN EXTRACT_VECTOR_FROM_RESPONSE(v_response);
@@ -215,24 +215,24 @@ BEGIN
     EXCEPTION
         WHEN OTHERS THEN
             -- Record failure
-            UPDATE OCI_CIRCUIT_BREAKER
+            UPDATE AZURE_AI_CIRCUIT_BREAKER
             SET failure_count = failure_count + 1,
                 last_failure = SYSTIMESTAMP
-            WHERE service_name = 'OCI_EMBEDDING';
+            WHERE service_name = 'AZURE_AI_EMBEDDING';
             
             -- Open circuit if threshold exceeded (5 failures)
             DECLARE
                 v_failures NUMBER;
             BEGIN
                 SELECT failure_count INTO v_failures
-                FROM OCI_CIRCUIT_BREAKER
-                WHERE service_name = 'OCI_EMBEDDING';
+                FROM AZURE_AI_CIRCUIT_BREAKER
+                WHERE service_name = 'AZURE_AI_EMBEDDING';
                 
                 IF v_failures >= 5 THEN
-                    UPDATE OCI_CIRCUIT_BREAKER
+                    UPDATE AZURE_AI_CIRCUIT_BREAKER
                     SET state = 'OPEN',
                         opened_at = SYSTIMESTAMP
-                    WHERE service_name = 'OCI_EMBEDDING';
+                    WHERE service_name = 'AZURE_AI_EMBEDDING';
                 END IF;
             END;
             COMMIT;
@@ -244,7 +244,7 @@ END;
 
 **Benefits:**
 - ✅ Prevents cascading failures
-- ✅ Fast-fail for users when OCI is down
+- ✅ Fast-fail for users when Azure AI Foundry is down
 - ✅ Automatic recovery when service resumes
 - ✅ Prevents database connection exhaustion
 
@@ -409,7 +409,7 @@ END;
 **Problem:**
 ```
 Malicious/Buggy Client → 1000 requests/second → Database overload
-                                                  OCI quota exhaustion
+                                                  Azure AI Foundry quota exhaustion
                                                   Other users affected
 ```
 
@@ -485,7 +485,7 @@ END;
 **Benefits:**
 - ✅ Protects system from abuse
 - ✅ Fair resource allocation
-- ✅ Prevents OCI quota exhaustion
+- ✅ Prevents Azure AI Foundry quota exhaustion
 - ✅ Better cost control
 
 **Implementation Effort:** 2 days  
@@ -713,7 +713,7 @@ END;
 ### 🟡 3.1. No Multi-Language Support
 
 **Current State:**
-- Cohere Embed English v3.0 is English-only
+- OpenAI Embed English v3.0 is English-only
 - Global organizations may have non-English service requests
 - No internationalization considerations
 
@@ -729,11 +729,10 @@ CREATE TABLE SIEBEL_NARRATIVES_STAGING (
 );
 
 -- Use multilingual embedding model
--- Cohere also offers multilingual models:
--- - embed-multilingual-v3.0
--- - embed-multilingual-light-v3.0
+-- OpenAI also offers multilingual embedding model:
+-- - text-embedding-3-large (supports 100+ languages)
 
--- Update OCI call to use multilingual model
+-- Update Azure AI Foundry call to use multilingual model if needed
 ```
 
 **Benefits:**

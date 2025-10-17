@@ -5,20 +5,34 @@
 ## 1. Overview
 This project replaces the legacy keyword-based service catalog search in Siebel CRM with a modern, AI-powered semantic search engine. The solution understands the user's intent behind natural language queries, analyzes historical service request data, and provides intelligent, relevant recommendations for service catalog items. This significantly improves search accuracy, reduces request miscategorization, and enhances the overall user experience.
 
-The architecture is built on the Oracle ecosystem, leveraging **Oracle Autonomous Database on Azure** for its powerful AI Vector Search capabilities with the added benefits of a fully managed PaaS solution. The managed service approach delivers enterprise-grade performance and security while significantly reducing administrative overhead. ORDS (Oracle REST Data Services) comes pre-configured within Autonomous Database, enabling rapid deployment of a high-performance, database-native API.
+The architecture is built on the Oracle ecosystem, leveraging **Oracle Database 23ai on Azure VM** for its powerful AI Vector Search capabilities. Oracle 23ai provides native vector search functionality with HNSW indexing, eliminating the need for specialized vector databases while maintaining enterprise-grade performance and security. ORDS (Oracle REST Data Services) is installed on the same VM to provide a high-performance, database-native API layer.
 
 ## 2. Key Features
 - **Natural Language Understanding:** Interprets the *meaning* and *intent* of user queries, not just keywords.
 - **High-Relevance Recommendations:** Uses vector similarity search to find the most relevant historical service requests and suggests the most appropriate catalog items.
-- **Managed Service Architecture:** Built on Oracle Autonomous Database on Azure, providing:
-  - Automatic scaling based on workload demands
-  - Self-patching and self-tuning capabilities
-  - Built-in high availability (99.95% SLA)
-  - Reduced operational overhead and total cost of ownership
-- **Rapid Deployment:** Pre-configured ORDS eliminates manual API server setup, accelerating time-to-production.
+- **100% Azure-Native Architecture:** Built entirely on Microsoft Azure infrastructure:
+  - Oracle Database 23ai on Azure VM for vector storage and native AI Vector Search
+  - Azure AI Foundry with OpenAI Service for text embeddings (1536 dimensions)
+  - Azure Container Apps for test application hosting
+  - Azure Virtual Network for secure, low-latency connectivity
+- **Enterprise-Grade Performance:** Oracle 23ai delivers:
+  - Native HNSW vector indexing for sub-50ms query times
+  - Proven scalability for millions of vectors
+  - ACID compliance and enterprise reliability
+  - Direct PL/SQL integration with vector operations
+- **Cost-Effective AI Platform:** Azure AI Foundry with OpenAI embeddings provides:
+  - Unified AI development platform (prompt flow, evaluation, monitoring)
+  - Competitive pricing with flexible consumption models
+  - Enterprise-grade governance and responsible AI tools
+  - Integrated model management and deployment
+- **Flexible Deployment:** Self-managed VM provides full control over:
+  - Database configuration and tuning
+  - ORDS customization and scaling
+  - Backup and recovery strategies
+  - Resource allocation
 - **Secure & Performant:** 
-  - Enterprise-grade security with automatic encryption and threat detection
-  - Low-latency private interconnect between Azure and OCI via ODSA
+  - Enterprise-grade security with TLS encryption
+  - All traffic stays within Azure VNet
   - API logic co-located with data for optimal performance
 - **Seamless Siebel Integration:** Integrates directly into the Siebel Open UI, providing a modern search experience without leaving the application.
 
@@ -35,40 +49,38 @@ graph TB
     subgraph Azure["Microsoft Azure Environment"]
         subgraph SiebelEnv["Siebel Environment"]
             Siebel["Siebel CRM<br/>(Open UI)"]
-            Oracle12c["Oracle 12c<br/>(Historical Data)"]
+            Oracle19c["Oracle 19c<br/>(Historical Data)"]
         end
         
         subgraph TestEnv["Test Environment"]
             Streamlit["Streamlit App<br/>(Azure Container Apps)"]
         end
         
-        subgraph ODSA["Oracle Database Service for Azure (ODSA)"]
-            subgraph ADB["Autonomous Database (Managed by Oracle)"]
-                ORDS["Pre-configured ORDS<br/>(REST API)"]
-                VectorDB["AI Vector Search<br/>(HNSW Index)"]
-                PLSQL["PL/SQL Logic<br/>(Business Rules)"]
-            end
+        subgraph VectorVM["Oracle 23ai VM"]
+            ORDS["ORDS<br/>(Manually Installed)<br/>REST API"]
+            VectorDB["Oracle 23ai<br/>AI Vector Search<br/>(HNSW Index)"]
+            PLSQL["PL/SQL Logic<br/>(Business Rules)"]
+        end
+        
+        subgraph AzureAI["Azure AI Services"]
+            AIFoundry["Azure AI Foundry<br/>(AI Development Platform)"]
+            AzureOpenAI["OpenAI Service<br/>(text-embedding-3-small)<br/>1536 dimensions"]
         end
         
         VNet["Azure Virtual Network<br/>(Private Connectivity)"]
-        PrivateEndpoint["Private Endpoint<br/>(to ADB)"]
-    end
-    
-    subgraph OCIBackend["OCI Backend Services (via Azure-OCI Interconnect)"]
-        GenAI["OCI Generative AI<br/>(Cohere Embed v3.0)"]
     end
     
     EndUser -->|1. Search Query| Siebel
     EndUser -.->|Test/QA| Streamlit
     
-    Siebel -->|2. HTTPS POST<br/>via Private Endpoint| ORDS
-    Streamlit -.->|2. HTTPS POST<br/>via Private Endpoint| ORDS
+    Siebel -->|2. HTTP POST<br/>via VNet| ORDS
+    Streamlit -.->|2. HTTP POST<br/>via VNet| ORDS
     
-    Oracle12c -.->|Batch: Nightly ETL<br/>via Private Endpoint| VectorDB
+    Oracle19c -.->|Batch: Nightly ETL<br/>via Database Link| VectorDB
     
     ORDS -->|3. Execute| PLSQL
-    PLSQL -->|4. Embed Query<br/>via Azure-OCI Interconnect| GenAI
-    GenAI -->|5. Return Vector| PLSQL
+    PLSQL -->|4. Embed Query<br/>via Private Endpoint| AzureOpenAI
+    AzureOpenAI -->|5. Return Vector| PLSQL
     PLSQL -->|6. Vector Search| VectorDB
     VectorDB -->|7. Top Matches| PLSQL
     PLSQL -->|8. JSON Response| ORDS
@@ -76,17 +88,18 @@ graph TB
     ORDS -->|9. Results| Siebel
     ORDS -.->|9. Results| Streamlit
     
-    VNet -.->|Private Connectivity| PrivateEndpoint
-    PrivateEndpoint -.->|Internal Access| ADB
+    VNet -.->|Private Connectivity| VectorVM
+    VNet -.->|Private Endpoint| AIFoundry
+    AIFoundry -.->|Managed| AzureOpenAI
     
     classDef azure fill:#0078D4,stroke:#004578,color:#fff
-    classDef odsa fill:#8B4789,stroke:#5C2D5A,color:#fff
-    classDef oci fill:#C74634,stroke:#8B2F23,color:#fff
+    classDef vm fill:#8B4789,stroke:#5C2D5A,color:#fff
+    classDef ai fill:#10A37F,stroke:#0D8A6A,color:#fff
     classDef user fill:#107C10,stroke:#094509,color:#fff
     
-    class Azure,SiebelEnv,TestEnv,VNet,PrivateEndpoint azure
-    class ODSA,ADB,ORDS,VectorDB,PLSQL odsa
-    class OCIBackend,GenAI oci
+    class Azure,SiebelEnv,TestEnv,VNet,AzureAI azure
+    class VectorVM,ORDS,VectorDB,PLSQL vm
+    class AIFoundry,AzureOpenAI ai
     class Users,EndUser user
 ```
 
@@ -94,9 +107,9 @@ graph TB
 
 The solution consists of two main flows:
 
-1.  **Offline Indexing (Batch Process):** A nightly job extracts historical data from the Siebel Oracle 12c database via database links, converts text narratives into 1024-dimensional vectors using the OCI Generative AI service (Cohere Embed v3.0), and stores them in the Oracle Autonomous Database vector index with HNSW algorithm for fast similarity search. The private Azure-OCI interconnect (ODSA) ensures secure, low-latency data transfer without traversing the public internet.
+1.  **Offline Indexing (Batch Process):** A nightly job extracts historical data from the Siebel Oracle 19c database via database links, converts text narratives into 1536-dimensional vectors using **Azure AI Foundry's OpenAI Service** (text-embedding-3-small or text-embedding-3-large), and stores them in the Oracle 23ai vector database with HNSW algorithm for fast similarity search. All communication stays within the Azure VNet, with Azure AI Foundry accessed via private endpoints for secure, low-latency data transfer.
 
-2.  **Real-Time Search (User Query):** When a user enters a natural language query in the Siebel UI, an eScript makes an HTTPS POST request to the pre-configured ORDS REST endpoint within Autonomous Database. A PL/SQL procedure (`GET_SEMANTIC_RECOMMENDATIONS`) converts the user's query to a vector, performs a cosine similarity search using `VECTOR_DISTANCE` against the HNSW index, aggregates results by catalog item frequency, and returns a ranked JSON list of the top 5 recommendations. The managed ORDS infrastructure provides automatic scaling and high availability (99.95% SLA).
+2.  **Real-Time Search (User Query):** When a user enters a natural language query in the Siebel UI, an eScript makes an HTTP POST request to the ORDS REST endpoint running on the Oracle 23ai VM (typically `http://localhost:8080/ords` or `http://<vm-ip>:8080/ords`). A PL/SQL procedure (`GET_SEMANTIC_RECOMMENDATIONS`) converts the user's query to a vector using **Azure AI Foundry's OpenAI Service**, performs a cosine similarity search using `VECTOR_DISTANCE` against the HNSW index, aggregates results by catalog item frequency, and returns a ranked JSON list of the top 5 recommendations. All traffic remains within Azure VNet for optimal performance and security.
 
 ### 3.3. Detailed Architecture Diagrams
 

@@ -1303,7 +1303,7 @@ docker run -p 8501:8501 --env-file .env semantic-search-test-app:latest
 **Why Azure Container Apps?**
 - Serverless container hosting within Azure
 - Automatic scaling based on traffic
-- Private VNet integration for secure connectivity to Autonomous Database
+- Private VNet integration for secure connectivity to Oracle 23ai Database
 - Built-in load balancing and SSL termination
 - Integrated with Azure Monitor and Application Insights
 - Cost-effective pay-per-use model
@@ -1720,3 +1720,4 @@ query,expected_category,description
 **Next Review Date:** 2025-11-17
 **Document Owner:** Development Team / QA Team
 **Approval Required From:** Technical Lead, QA Lead, Business Owner
+

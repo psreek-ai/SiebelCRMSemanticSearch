@@ -8,22 +8,38 @@
 
 ## Important Architecture Note
 
-**Oracle Autonomous Database Deployment Model:**
+**Oracle Database 23ai on Azure VM:**
 
-This solution uses **Oracle Database Service for Azure (ODSA)**, which deploys Oracle Autonomous Database **within Microsoft Azure infrastructure**. This is not a traditional cross-cloud deployment.
+This solution uses **Oracle Database 23ai installed on Azure Virtual Machines**, providing a self-managed database deployment with full control and flexibility. This is a **100% Azure-native solution**.
 
 **Key Points:**
-- ✅ **Autonomous Database runs within Azure** - Provisioned through the Azure Portal as a native Azure service
-- ✅ **Private connectivity** - Access via Azure Private Endpoints (no public internet traversal)
-- ✅ **Azure-native experience** - Appears as an Azure resource in your subscription
-- ✅ **Unified management** - Managed through Azure Portal alongside other Azure resources
-- ✅ **Low latency** - Direct in-region connectivity between Azure VMs/Container Apps and Autonomous Database
-- ⚠️ **OCI backend services** - Only OCI Generative AI service is accessed via the Azure-OCI interconnect for embedding generation
+- ✅ **Oracle 23ai on Azure VM** - Self-managed installation on Azure infrastructure with full administrative control
+- ✅ **Azure AI Foundry with OpenAI Service** - Unified AI development platform for embeddings and future AI capabilities
+- ✅ **Private connectivity** - All traffic stays within Azure VNet with Private Endpoints to AI Foundry
+- ✅ **Azure-native experience** - All resources (VMs, AI Foundry, Container Apps) in your Azure subscription
+- ✅ **Unified management** - Managed through Azure Portal for complete stack
+- ✅ **Low latency** - Direct in-region connectivity between all components
+- ✅ **100% Azure** - No cross-cloud dependencies
 
-**Why ODSA?**
-- Keeps entire application stack within Azure (Siebel VM, Container Apps, and Autonomous Database)
-- Simplifies networking (private endpoints instead of cross-cloud VPN)
-- Provides Oracle's managed database PaaS benefits within Azure's ecosystem
+**AI Platform:**
+- **Azure AI Foundry** - Comprehensive AI development platform (formerly Azure AI Studio)
+- **OpenAI Service**: `text-embedding-3-small` (1536 dimensions) or `text-embedding-3-large` (3072 dimensions)
+- **Platform Benefits**: Prompt flow, model evaluation, responsible AI tools, unified governance
+- **Cost**: Competitive pricing at $0.02 per million tokens for embeddings
+- **Access**: From Oracle 23ai VM via DBMS_CLOUD to Azure AI Foundry endpoint with Private Endpoint
+
+**Database Architecture:**
+- **Oracle Database 23ai** - Self-managed on Azure VM with native AI Vector Search (HNSW indexing)
+- **Manual ORDS Installation** - Installed and configured on the same VM (http://localhost:8080/ords)
+- **Full Control** - Complete control over configuration, tuning, patching, and resource allocation
+- **Siebel Database** - Oracle 19c (corrected from 12c)
+
+**Why This Architecture?**
+- Complete control over database configuration and optimization
+- Azure AI Foundry provides unified platform for current and future AI capabilities
+- Simplifies networking (all components within Azure VNet)
+- Flexible deployment and scaling based on specific requirements
+- Lower costs with traditional Oracle licensing or BYOL options
 - Single-pane-of-glass management through Azure Portal
 
 ---
@@ -53,20 +69,17 @@ C4Context
     Person(admin, "Administrator", "System admin managing deployment")
     
     System_Boundary(azure, "Microsoft Azure") {
-        System(siebel, "Siebel CRM", "Legacy CRM system with Oracle 12c")
+        System(siebel, "Siebel CRM", "Legacy CRM system with Oracle 19c")
         System(testapp, "Test Application", "Streamlit validation app")
-    }
-    
-    System_Boundary(oci, "Oracle Cloud (via ODSA)") {
-        System(adb, "Autonomous Database", "AI Vector Search + ORDS API")
-        System(genai, "OCI Generative AI", "Cohere Embed v3.0")
+        System(oracle23ai, "Oracle 23ai VM", "AI Vector Search + ORDS API")
+        System(aifoundry, "Azure AI Foundry", "OpenAI Service for embeddings")
     }
     
     Rel(user, siebel, "Searches for catalog items", "HTTPS")
     Rel(admin, testapp, "Tests and validates", "HTTPS")
-    Rel(siebel, adb, "API calls for semantic search", "HTTPS/ORDS")
-    Rel(testapp, adb, "API calls for testing", "HTTPS/ORDS")
-    Rel(adb, genai, "Generate embeddings", "HTTPS")
+    Rel(siebel, oracle23ai, "API calls for semantic search", "HTTP/ORDS")
+    Rel(testapp, oracle23ai, "API calls for testing", "HTTP/ORDS")
+    Rel(oracle23ai, aifoundry, "Generate embeddings", "HTTPS")
     
     UpdateLayoutConfig($c4ShapeInRow="3", $c4BoundaryInRow="2")
 ```
@@ -83,43 +96,47 @@ graph TB
     subgraph AzureCloud["Microsoft Azure Environment"]
         subgraph SiebelEnv["Siebel Environment (VM)"]
             SiebelUI["Siebel Open UI<br/>(Web Interface)"]
-            SiebelDB["Oracle 12c Database<br/>(10 Years Historical Data)"]
+            SiebelDB["Oracle 19c Database<br/>(10 Years Historical Data)"]
         end
         
         subgraph TestEnv["Test Environment"]
             Streamlit["Streamlit Test App<br/>(Azure Container Apps)"]
         end
         
-        subgraph ODSA["Oracle Database Service for Azure (ODSA)"]
-            subgraph ADBService["Autonomous Database (Managed by Oracle)"]
-                ORDS["Pre-configured ORDS<br/>(REST API Layer)"]
-                VectorEngine["AI Vector Search Engine<br/>(HNSW Index)"]
-                PLSQLLogic["PL/SQL Search Logic<br/>(Business Rules)"]
-            end
+        subgraph VectorVM["Oracle 23ai VM (Self-Managed)"]
+            ORDS["ORDS<br/>(Manually Installed)<br/>REST API Layer"]
+            VectorEngine["Oracle 23ai Database<br/>AI Vector Search<br/>(HNSW Index)"]
+            PLSQLLogic["PL/SQL Search Logic<br/>(Business Rules)"]
         end
         
         subgraph AzureNetwork["Azure Networking"]
             VNet["Virtual Network<br/>(Private Connectivity)"]
             NSG["Network Security Groups"]
-            PrivateEndpoint["Private Endpoint<br/>(to ADB)"]
+            PrivateEndpoint["Private Endpoint<br/>(to AI Foundry)"]
         end
-    end
-    
-    subgraph OCIBackend["OCI Backend Services (via Azure-OCI Interconnect)"]
-        GenAIService["OCI Generative AI<br/>(Cohere Embed v3.0)<br/>1024-dimensional vectors"]
+        
+        subgraph AzureAI["Azure AI Services"]
+            AzureOpenAI["Azure OpenAI Service<br/>(text-embedding-3-small)<br/>1536-dimensional vectors"]
+        end
+        
+        subgraph AzureAI["Azure AI Foundry"]
+            AIFoundry["AI Foundry Workspace<br/>(AI Development Platform)"]
+            AzureOpenAI["OpenAI Service<br/>(text-embedding-3-small)<br/>1536 dimensions"]
+        end
     end
     
     EndUser -->|1. Search Query| SiebelUI
     TestUser -->|1. Test Query| Streamlit
     
-    SiebelUI -->|2. HTTPS POST<br/>via Private Endpoint| ORDS
-    Streamlit -->|2. HTTPS POST<br/>via Private Endpoint| ORDS
+    SiebelUI -->|2. HTTP POST<br/>via VNet| ORDS
+    Streamlit -->|2. HTTP POST<br/>via VNet| ORDS
     
-    SiebelDB -.->|Batch: Database Link<br/>via Private Endpoint| VectorEngine
+    SiebelDB -.->|Batch: Database Link<br/>via VNet| VectorEngine
     
     ORDS -->|3. Execute| PLSQLLogic
-    PLSQLLogic -->|4. Embed Query<br/>via Azure-OCI Interconnect| GenAIService
-    GenAIService -->|5. Return Vector| PLSQLLogic
+    PLSQLLogic -->|4. Embed Query<br/>via Private Endpoint| AIFoundry
+    AIFoundry -->|Route to| AzureOpenAI
+    AzureOpenAI -->|5. Return Vector| PLSQLLogic
     PLSQLLogic -->|6. Vector Search| VectorEngine
     VectorEngine -->|7. Top Matches| PLSQLLogic
     PLSQLLogic -->|8. JSON Response| ORDS
@@ -129,17 +146,17 @@ graph TB
     SiebelUI -->|10. Display| EndUser
     Streamlit -->|10. Display| TestUser
     
-    VNet -.->|Private Connectivity| PrivateEndpoint
-    PrivateEndpoint -.->|Internal Access| ADBService
+    VNet -.->|Private Connectivity| VectorVM
+    VNet -.->|Private Endpoint| AIFoundry
     
     classDef azure fill:#0078D4,stroke:#004578,color:#fff
-    classDef odsa fill:#8B4789,stroke:#5C2D5A,color:#fff
-    classDef oci fill:#C74634,stroke:#8B2F23,color:#fff
+    classDef vm fill:#8B4789,stroke:#5C2D5A,color:#fff
+    classDef ai fill:#10A37F,stroke:#0D8A6A,color:#fff
     classDef user fill:#107C10,stroke:#094509,color:#fff
     
-    class AzureCloud,SiebelEnv,TestEnv,AzureNetwork,VNet,NSG,PrivateEndpoint azure
-    class ODSA,ADBService,ORDS,VectorEngine,PLSQLLogic odsa
-    class OCIBackend,GenAIService oci
+    class AzureCloud,SiebelEnv,TestEnv,AzureNetwork,VNet,NSG,PrivateEndpoint,AzureAI azure
+    class VectorVM,ORDS,VectorEngine,PLSQLLogic vm
+    class AIFoundry,AzureOpenAI ai
     class Users,EndUser,TestUser user
 ```
 
@@ -181,8 +198,8 @@ graph TB
     end
     
     subgraph External["External Services"]
-        GenAI["OCI Generative AI<br/>(DBMS_CLOUD.send_request)"]
-        SiebelDB["Siebel Database<br/>(Database Link)"]
+        AIFoundry["Azure AI Foundry<br/>(OpenAI Service via DBMS_CLOUD)"]
+        SiebelDB["Siebel Database<br/>(Oracle 19c - Database Link)"]
     end
     
     SiebelUI -->|User Query| SiebelBS
@@ -196,8 +213,8 @@ graph TB
     ORDSRouter --> SearchProc
     
     SearchProc --> EmbedFunc
-    EmbedFunc --> GenAI
-    GenAI --> EmbedFunc
+    EmbedFunc --> AIFoundry
+    AIFoundry --> EmbedFunc
     
     SearchProc --> VectorFunc
     VectorFunc --> VectorTable
@@ -230,7 +247,7 @@ graph TB
     class API,ORDSEndpoint,ORDSAuth,ORDSRouter api
     class Business,SearchProc,EmbedFunc,VectorFunc,AggFunc business
     class Data,VectorTable,CatalogTable,AuditTable data
-    class External,GenAI,SiebelDB external
+    class External,AIFoundry,SiebelDB external
 ```
 
 ### 2.2. Technology Stack Layers
@@ -244,29 +261,29 @@ graph LR
     end
     
     subgraph APILayer["API Technologies"]
-        A1["Oracle REST Data Services<br/>(Pre-configured)"]
-        A2["JSON over HTTPS<br/>(RESTful)"]
+        A1["Oracle REST Data Services<br/>(Manually Installed)"]
+        A2["JSON over HTTP<br/>(RESTful)"]
         A3["OAuth2/API Keys<br/>(Security)"]
     end
     
     subgraph DatabaseLayer["Database Technologies"]
-        D1["Oracle Autonomous Database<br/>(Managed PaaS)"]
+        D1["Oracle Database 23ai<br/>(Self-Managed on Azure VM)"]
         D2["PL/SQL<br/>(Business Logic)"]
         D3["AI Vector Search<br/>(HNSW Index)"]
-        D4["DBMS_CLOUD<br/>(OCI Integration)"]
+        D4["DBMS_CLOUD<br/>(Azure Integration)"]
     end
     
     subgraph AILayer["AI/ML Technologies"]
-        AI1["OCI Generative AI<br/>(Cohere Embed v3.0)"]
-        AI2["Vector Embeddings<br/>(1024 dimensions)"]
+        AI1["Azure AI Foundry<br/>(OpenAI Service - text-embedding-3-small)"]
+        AI2["Vector Embeddings<br/>(1536 dimensions)"]
         AI3["Cosine Similarity<br/>(VECTOR_DISTANCE)"]
     end
     
     subgraph Infrastructure["Infrastructure"]
-        I1["Azure VMs<br/>(Siebel)"]
+        I1["Azure VMs<br/>(Siebel + Oracle 23ai)"]
         I2["Azure Container Apps<br/>(Test App)"]
-        I3["ODSA<br/>(Azure-OCI Interconnect)"]
-        I4["Azure Networking<br/>(VNet, NSG)"]
+        I3["Azure AI Foundry<br/>(AI Platform)"]
+        I4["Azure Networking<br/>(VNet, NSG, Private Endpoints)"]
     end
     
     Frontend --> APILayer
@@ -304,7 +321,7 @@ sequenceDiagram
     participant API as ORDS API
     participant PL as PL/SQL Logic
     participant CACHE as Query Cache
-    participant AI as OCI GenAI
+    participant AI as Azure AI Foundry
     participant VDB as Vector Index
     participant CAT as Catalog DB
     participant LOG as Audit Log
@@ -352,9 +369,9 @@ sequenceDiagram
     autonumber
     participant CRON as Scheduler<br/>(Nightly Job)
     participant ETL as ETL Process<br/>(PL/SQL)
-    participant SIEBEL as Siebel DB<br/>(Oracle 12c)
+    participant SIEBEL as Siebel DB<br/>(Oracle 19c)
     participant STAGE as Staging Table
-    participant AI as OCI GenAI
+    participant AI as Azure AI Foundry<br/>(OpenAI)
     participant VDB as Vector Index
     participant STATS as Statistics
     
@@ -371,7 +388,7 @@ sequenceDiagram
         ETL->>STAGE: SELECT 100 records
         
         ETL->>AI: DBMS_CLOUD.send_request<br/>(batch embed 100 texts)
-        AI-->>ETL: Return 100 embeddings
+        AI-->>ETL: Return 100 embeddings (1536-dim)
         
         ETL->>VDB: MERGE INTO vector_index<br/>(UPSERT records + embeddings)
         VDB-->>ETL: 100 rows merged
@@ -393,7 +410,7 @@ sequenceDiagram
 
 ```mermaid
 graph LR
-    subgraph Source["Data Sources (Siebel Oracle 12c)"]
+    subgraph Source["Data Sources (Siebel Oracle 19c)"]
         SR[Service Request<br/>- Abstract<br/>- Detailed Description]
         WO[Work Orders<br/>- Action Log<br/>- Resolution Notes]
         EMAIL[Email Activities<br/>- Body Text<br/>- Attachments]
@@ -412,8 +429,8 @@ graph LR
     
     subgraph AI["AI Embedding"]
         BATCH[Batch Processing<br/>100 records/request]
-        EMBED[OCI GenAI<br/>Cohere Embed v3.0]
-        VECTOR[Generate Vectors<br/>1024 dimensions]
+        EMBED[Azure AI Foundry<br/>OpenAI text-embedding-3-small]
+        VECTOR[Generate Vectors<br/>1536 dimensions]
     end
     
     subgraph Load["Load Layer"]
@@ -468,7 +485,7 @@ graph TB
         subgraph VNET["Virtual Network (10.0.0.0/16)"]
             subgraph AppSubnet["Application Subnet (10.0.1.0/24)"]
                 SiebelVM["Siebel VM<br/>10.0.1.10"]
-                Oracle12c["Oracle 12c DB<br/>10.0.1.11"]
+                Oracle12c["Oracle 19c DB<br/>10.0.1.11"]
             end
             
             subgraph ContainerSubnet["Container Subnet (10.0.2.0/24)"]
@@ -494,14 +511,14 @@ graph TB
     end
     
     subgraph ODSAService["Oracle Database Service for Azure (within Azure)"]
-        subgraph ADB["Autonomous Database"]
+        subgraph ADB["Oracle 23ai Database"]
             ORDS["ORDS Endpoint<br/>*.adb.oraclecloudapps.com"]
             VectorDB["Vector Database<br/>AI Vector Search"]
         end
     end
     
     subgraph OCIBackend["OCI Backend (via Azure-OCI Interconnect)"]
-        GenAI["OCI Generative AI<br/>(Regional Service)"]
+        GenAI["Azure AI Foundry<br/>(Regional Service)"]
     end
     
     Users -->|TLS 1.3| SiebelVM
@@ -569,7 +586,7 @@ graph LR
     end
     
     subgraph Backend["Backend Services"]
-        ADB["Autonomous Database<br/>(via ODSA)"]
+        ADB["Oracle 23ai Database<br/>(via ODSA)"]
     end
     
     Browser -->|HTTPS| WAF
@@ -691,7 +708,7 @@ sequenceDiagram
     participant KeyVault as Azure Key Vault
     participant ORDS as ORDS Endpoint
     participant OAuth as OAuth2 Server<br/>(Optional)
-    participant DB as Autonomous Database
+    participant DB as Oracle 23ai Database
     participant Audit as Audit Log
     
     Note over Client,Audit: Option 1: API Key Authentication
@@ -818,7 +835,7 @@ graph TB
     end
     
     subgraph Embedding["Embedding Service"]
-        API["OCI Generative AI API<br/>(Cohere Embed v3.0)"]
+        API["Azure AI Foundry API<br/>(OpenAI text-embedding-3-small)"]
         Model["Neural Network Model<br/>- Input: Text tokens<br/>- Output: 1024-dim vector"]
     end
     
@@ -967,7 +984,7 @@ graph TB
 ```mermaid
 sequenceDiagram
     participant App as Application
-    participant DB as Autonomous Database
+    participant DB as Oracle 23ai Database
     participant HNSW as HNSW Index
     participant Calc as Distance Calculator
     participant Rank as Ranking Engine
@@ -1073,7 +1090,7 @@ graph TB
 ```mermaid
 graph TB
     subgraph Sources["Data Sources"]
-        S1["Siebel Oracle 12c<br/>(Primary CRM Data)"]
+        S1["Siebel Oracle 19c<br/>(Primary CRM Data)"]
         S2["Email Server<br/>(Activity History)"]
         S3["External Systems<br/>(Optional)"]
     end
@@ -1092,7 +1109,7 @@ graph TB
     end
     
     subgraph External["External AI Services"]
-        E1["OCI Generative AI<br/>(Embeddings)"]
+        E1["Azure AI Foundry<br/>(Embeddings)"]
         E2["Azure OpenAI<br/>(Future: LLM)"]
     end
     
@@ -1144,3 +1161,9 @@ All diagrams are created using Mermaid syntax and can be rendered in:
 - Documentation platforms (Confluence, GitBook, etc.)
 
 For implementation details, refer to the Technical Design Documents (TDD 1-5).
+
+
+
+
+
+

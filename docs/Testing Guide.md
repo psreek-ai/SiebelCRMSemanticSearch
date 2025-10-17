@@ -31,7 +31,7 @@ Before beginning testing, ensure:
 ### 2.3. Test Data Preparation
 
 ```sql
--- Connect to Oracle Autonomous Database as SEMANTIC_SEARCH
+-- Connect to Oracle Oracle 23ai Database as SEMANTIC_SEARCH
 sqlplus SEMANTIC_SEARCH/<password>@<service_name>
 
 -- Verify test data exists
@@ -84,7 +84,7 @@ COMMIT;
 
 ### Test 1.1: Database Link Connectivity
 
-**Objective:** Verify Oracle Autonomous Database can access Oracle 12c via VNet peering
+**Objective:** Verify Oracle Oracle 23ai Database can access Oracle 19c via VNet peering
 
 ```sql
 -- Test 1.1.1: Test database link
@@ -232,7 +232,7 @@ SET TIMING OFF;
 
 ```bash
 # Test 1.5.1: API accessibility
-curl -X GET https://<unique_id>-<db_name>.adb.<region>.oraclecloudapps.com/ords/
+curl -X GET http://<oracle-23ai-vm-ip>:8080/ords/
 
 # Expected: HTML welcome page or JSON response
 # Pass Criteria: HTTP 200
@@ -244,7 +244,7 @@ curl -X POST \
   -H "X-API-Key: <API_KEY>" \
   -H "Top-K: 3" \
   -d "laptop screen broken" \
-  https://<unique_id>-<db_name>.adb.<region>.oraclecloudapps.com/ords/semantic_search/siebel/search
+  http://<oracle-23ai-vm-ip>:8080/ords/semantic_search/siebel/search
 
 # Expected: JSON with recommendations
 # Pass Criteria: HTTP 200, valid JSON, 3 recommendations
@@ -254,7 +254,7 @@ curl -X POST \
 curl -X POST \
   -H "Content-Type: text/plain" \
   -H "X-API-Key: <API_KEY>" \
-  https://<unique_id>-<db_name>.adb.<region>.oraclecloudapps.com/ords/semantic_search/siebel/search
+  http://<oracle-23ai-vm-ip>:8080/ords/semantic_search/siebel/search
 
 # Expected: Error message in JSON
 # Pass Criteria: HTTP 200, error field present
@@ -264,7 +264,7 @@ curl -X POST \
 curl -X POST \
   -H "Content-Type: text/plain" \
   -d "test query" \
-  https://<unique_id>-<db_name>.adb.<region>.oraclecloudapps.com/ords/semantic_search/siebel/search
+  http://<oracle-23ai-vm-ip>:8080/ords/semantic_search/siebel/search
 
 # Expected: 401 Unauthorized
 # Pass Criteria: HTTP 401
@@ -395,7 +395,7 @@ kill <ords_pid>
 
 **Test 2.3.2: Database Connection Loss**
 ```sql
--- Simulate connection issue (as ADMIN user in Autonomous Database)
+-- Simulate connection issue (as ADMIN user in Oracle 23ai Database)
 ALTER SYSTEM KILL SESSION '<sid>,<serial#>' IMMEDIATE;
 ```
 
@@ -786,3 +786,4 @@ DELETE FROM TEST_QUERIES;
 DELETE FROM UAT_GOLDEN_SET;
 COMMIT;
 ```
+

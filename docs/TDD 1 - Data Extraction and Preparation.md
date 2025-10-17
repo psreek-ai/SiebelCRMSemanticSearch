@@ -1,27 +1,27 @@
 # Technical Design Document 1: Data Extraction and Preparation
 
-**Version:** 2.2
-**Date:** 2025-10-17
+**Version:** 3.0  
+**Date:** 2025-10-17  
 **Owner:** Database Team
 
 ## 1. Objective
-This document provides the technical specification for extracting and preparing historical service request data from the Oracle 12c Siebel database and loading it into **Oracle Autonomous Database on Azure**. We use **direct database-to-database connectivity** via Oracle Database Links to copy relevant tables and then use SQL to create the consolidated dataset. The managed nature of Autonomous Database simplifies connectivity and security configuration.
+This document provides the technical specification for extracting and preparing historical service request data from the **Oracle 19c Siebel database** and loading it into **Oracle Database 23ai on Azure VM**. We use **direct database-to-database connectivity** via Oracle Database Links to copy relevant tables and then use SQL to create the consolidated dataset. This approach provides full control over the ETL process and network configuration.
 
 ## 2. Architecture Overview
 
 ### 2.1. Data Flow
 ```
-Oracle 12c (Siebel DB on Azure VM)  →  Private Network  →  Oracle Autonomous Database on Azure
-      ↓                                   (VNet Peering)              ↓
-   Source Data                                                Database Link
-                                                                    ↓
+Oracle 19c (Siebel DB on Azure VM)  →  Azure Private Network  →  Oracle 23ai (Vector DB on Azure VM)
+      ↓                                   (VNet connectivity)              ↓
+   Source Data                                                      Database Link
+                                                                          ↓
                                               Copy relevant tables (S_SRV_REQ, S_ORDER, S_EVT_ACT, S_PROD_INT)
-                                                                    ↓
-                                              Run SQL aggregation query in ADB
-                                                                    ↓
+                                                                          ↓
+                                              Run SQL aggregation query in Oracle 23ai
+                                                                          ↓
                                               Populate staging table with narrative text
-                                                                    ↓
-                                              Generate embeddings (covered in TDD 2)
+                                                                          ↓
+                                              Generate embeddings via Azure AI Foundry (covered in TDD 2)
 ```
 
 ### 2.2. Primary Source Tables
@@ -32,115 +32,177 @@ Oracle 12c (Siebel DB on Azure VM)  →  Private Network  →  Oracle Autonomous
 
 ## 3. Implementation Steps
 
-### Step 1: Create Database Link from Oracle Autonomous Database to Oracle 12c
+### Step 1: Create Database Link from Oracle 23ai to Oracle 19c Siebel Database
 
-**Executor:** Database Administrator on Oracle Autonomous Database  
-**Duration:** 20 minutes
+**Executor:** Database Administrator on Oracle 23ai VM  
+**Duration:** 30 minutes
 
 #### 1.1. Configure Network Connectivity Prerequisites
 
-**Important:** Before creating the database link, ensure secure network connectivity between Oracle Autonomous Database and the Oracle 12c VM on Azure.
+**Important:** Ensure secure network connectivity between Oracle 23ai VM and Oracle 19c Siebel VM on Azure.
 
 **Network Setup Requirements:**
 
-1. **VNet Peering (Recommended):**
-   - Configure Azure VNet peering between:
-     - The VNet hosting the Autonomous Database private endpoint
-     - The VNet hosting the Oracle 12c VM
+1. **Azure VNet Configuration:**
+   - Both VMs should be in the same VNet, or configure VNet peering if in different VNets
+   - Verify VMs can reach each other via private IP addresses
    
 2. **Network Security Group (NSG) Rules:**
-   - Update NSG on Oracle 12c VM to allow inbound traffic:
+   - Update NSG on Oracle 19c Siebel VM to allow inbound traffic:
      ```
-     Source: Autonomous Database subnet CIDR range
+     Source: Oracle 23ai VM private IP or subnet CIDR
+     Destination: Oracle 19c VM private IP
      Destination Port: 1521
      Protocol: TCP
      Action: Allow
+     Priority: 100
+     Name: Allow-Oracle23ai-to-Siebel19c
      ```
 
-3. **Oracle 12c Listener Configuration:**
-   - Verify Oracle 12c listener is running and accepting connections
+3. **Oracle 19c Listener Configuration:**
+   - Verify Oracle 19c listener is running and accepting connections
    ```bash
-   # On Oracle 12c VM
+   # SSH to Oracle 19c Siebel VM
+   ssh siebel@<siebel-vm-ip>
+   
+   # Check listener status
    lsnrctl status
+   # Expected: Service "<service_name>" has 1+ instance(s)
+   ```
+
+4. **Firewall Configuration:**
+   ```bash
+   # On Oracle 19c Siebel VM, allow port 1521
+   sudo firewall-cmd --permanent --add-port=1521/tcp
+   sudo firewall-cmd --reload
    ```
 
 #### 1.2. Test Network Connectivity
+
 ```bash
-# From an Azure VM in the same VNet as ADB private endpoint, test connectivity to Oracle 12c
-telnet <DB_12C_HOST> 1521
-# Expected: Connection successful
+# From Oracle 23ai VM, test connectivity to Oracle 19c Siebel VM
+ssh oracle@<oracle-23ai-vm-ip>
+
+# Test network connectivity
+telnet <siebel-vm-private-ip> 1521
+# Expected: Connected to <siebel-vm-private-ip>
 
 # Or using netcat
-nc -zv <DB_12C_HOST> 1521
-# Expected: Connection to <DB_12C_HOST> 1521 port [tcp/oracle] succeeded!
+nc -zv <siebel-vm-private-ip> 1521
+# Expected: Connection to <siebel-vm-private-ip> 1521 port [tcp/oracle] succeeded!
+
+# Test with tnsping (if tnsnames.ora is configured)
+tnsping <siebel-service-name>
+# Expected: OK (time in ms)
 ```
 
-#### 1.3. Create Database Link in Oracle Autonomous Database
+#### 1.3. Create Database Link in Oracle 23ai
 
-**Note:** In Autonomous Database, you don't manage tnsnames.ora files. Instead, use inline connection descriptors.
-
-Connect to Autonomous Database as SEMANTIC_SEARCH user:
+Connect to Oracle 23ai as SEMANTIC_SEARCH user:
 
 ```sql
--- Connect using SQL*Plus or SQL Developer with wallet configuration
-sqlplus SEMANTIC_SEARCH/<password>@<service_name>_high
+-- SSH to Oracle 23ai VM
+ssh oracle@<oracle-23ai-vm-ip>
 
--- Create database link with inline connection descriptor
-CREATE DATABASE LINK SIEBEL_12C_LINK
+-- Connect using SQL*Plus
+sqlplus SEMANTIC_SEARCH/<password>@localhost:1521/VECSRCH
+
+-- Create database link with inline connection descriptor to Oracle 19c Siebel database
+CREATE DATABASE LINK SIEBEL_19C_LINK
   CONNECT TO siebel_readonly IDENTIFIED BY "<password>"
   USING '(DESCRIPTION =
-           (ADDRESS = (PROTOCOL = TCP)(HOST = <DB_12C_HOST>)(PORT = 1521))
+           (ADDRESS = (PROTOCOL = TCP)(HOST = <siebel-vm-private-ip>)(PORT = 1521))
            (CONNECT_DATA =
              (SERVER = DEDICATED)
-             (SERVICE_NAME = <DB_12C_SERVICE>)
+             (SERVICE_NAME = <SIEBEL_SERVICE_NAME>)
            )
          )';
 
 -- Test the database link
-SELECT COUNT(*) FROM SIEBEL.S_SRV_REQ@SIEBEL_12C_LINK;
--- Expected output: A number (e.g., 1500000)
+SELECT COUNT(*) FROM SIEBEL.S_SRV_REQ@SIEBEL_19C_LINK;
+-- Expected output: A number (e.g., 1500000+)
 
 -- Verify all required tables are accessible
-SELECT 'S_SRV_REQ' AS TABLE_NAME, COUNT(*) AS ROW_COUNT FROM SIEBEL.S_SRV_REQ@SIEBEL_12C_LINK
+SELECT 'S_SRV_REQ' AS TABLE_NAME, COUNT(*) AS ROW_COUNT FROM SIEBEL.S_SRV_REQ@SIEBEL_19C_LINK
 UNION ALL
-SELECT 'S_ORDER', COUNT(*) FROM SIEBEL.S_ORDER@SIEBEL_12C_LINK
+SELECT 'S_ORDER', COUNT(*) FROM SIEBEL.S_ORDER@SIEBEL_19C_LINK
 UNION ALL
-SELECT 'S_EVT_ACT', COUNT(*) FROM SIEBEL.S_EVT_ACT@SIEBEL_12C_LINK
+SELECT 'S_EVT_ACT', COUNT(*) FROM SIEBEL.S_EVT_ACT@SIEBEL_19C_LINK
 UNION ALL
-SELECT 'S_PROD_INT', COUNT(*) FROM SIEBEL.S_PROD_INT@SIEBEL_12C_LINK;
+SELECT 'S_PROD_INT', COUNT(*) FROM SIEBEL.S_PROD_INT@SIEBEL_19C_LINK;
+
+-- Expected output: Row counts for all four tables
+
+EXIT;
+```
+
+**Alternative: Add to tnsnames.ora (Optional)**
+
+If you prefer using tnsnames.ora instead of inline descriptors:
+
+```bash
+# As oracle user on Oracle 23ai VM
+vi $ORACLE_HOME/network/admin/tnsnames.ora
+
+# Add entry:
+SIEBEL_19C =
+  (DESCRIPTION =
+    (ADDRESS = (PROTOCOL = TCP)(HOST = <siebel-vm-private-ip>)(PORT = 1521))
+    (CONNECT_DATA =
+      (SERVER = DEDICATED)
+      (SERVICE_NAME = <SIEBEL_SERVICE_NAME>)
+    )
+  )
+
+# Then create database link with tnsnames reference:
+sqlplus SEMANTIC_SEARCH/<password>@localhost:1521/VECSRCH
+
+CREATE DATABASE LINK SIEBEL_19C_LINK
+  CONNECT TO siebel_readonly IDENTIFIED BY "<password>"
+  USING 'SIEBEL_19C';
 ```
 
 **Troubleshooting:**
-- **ORA-12154**: TNS name not found → Check inline connection descriptor syntax
-- **ORA-12541**: No listener → Verify Oracle 12c listener is running: `lsnrctl status`
-- **ORA-01017**: Invalid username/password → Verify siebel_readonly credentials
+- **ORA-12154**: TNS name not found → Check inline connection descriptor syntax or tnsnames.ora entry
+- **ORA-12541**: No listener → Verify Oracle 19c listener is running on Siebel VM: `lsnrctl status`
+- **ORA-01017**: Invalid username/password → Verify siebel_readonly user exists and credentials are correct
 - **ORA-02019**: Connection description for remote database not found → Check USING clause format
 - **ORA-12170**: Connect timeout → Verify:
-  - VNet peering is established and active
-  - NSG rules allow traffic on port 1521
-  - Oracle 12c firewall allows connections from ADB subnet
-  - Private endpoint DNS resolution is working
+  - Azure NSG rules allow traffic from Oracle 23ai VM to Siebel VM on port 1521
+  - Both VMs are in same VNet or VNet peering is configured
+  - Firewall on Siebel VM allows connections from Oracle 23ai VM
+  - Oracle 19c listener is configured to accept connections from Oracle 23ai VM IP
 
 ---
 
-### Step 2: Create Staging Schema and Tables in Oracle Autonomous Database
+### Step 2: Create Staging Schema and Tables in Oracle 23ai
 
-**Executor:** Database Administrator on Oracle Autonomous Database  
+**Executor:** Database Administrator on Oracle 23ai VM  
 **Duration:** 10 minutes
 
-#### 2.1. Create Staging Schema (if not exists)
+#### 2.1. Connect to Oracle 23ai Database
 
-**Note:** In Autonomous Database, user creation is performed by connecting as the ADMIN user (not SYSDBA).
+```bash
+# SSH to Oracle 23ai VM
+ssh oracle@<oracle-23ai-vm-ip>
+
+# Connect as SEMANTIC_SEARCH user
+sqlplus SEMANTIC_SEARCH/<password>@localhost:1521/VECSRCH
+```
+
+#### 2.2. Create Staging Schema (Already Created in Deployment)
+
+**Note:** The SEMANTIC_SEARCH schema was created during deployment (Phase 2, Step 2.4). If not already created, create it now:
 
 ```sql
--- Connect as ADMIN user
-sqlplus ADMIN/<password>@<service_name>_high
+-- Connect as SYS (if schema doesn't exist)
+sqlplus / as sysdba
 
 -- Create application user
 CREATE USER SEMANTIC_SEARCH IDENTIFIED BY "<secure_password>"
-  DEFAULT TABLESPACE DATA
+  DEFAULT TABLESPACE USERS
   TEMPORARY TABLESPACE TEMP
-  QUOTA UNLIMITED ON DATA;
+  QUOTA UNLIMITED ON USERS;
 
 -- Grant necessary privileges
 GRANT CREATE SESSION TO SEMANTIC_SEARCH;
@@ -149,13 +211,14 @@ GRANT CREATE VIEW TO SEMANTIC_SEARCH;
 GRANT CREATE PROCEDURE TO SEMANTIC_SEARCH;
 GRANT CREATE SEQUENCE TO SEMANTIC_SEARCH;
 GRANT CREATE JOB TO SEMANTIC_SEARCH;
+GRANT CREATE DATABASE LINK TO SEMANTIC_SEARCH;
 
--- Grant privileges for DBMS_CLOUD (pre-configured in Autonomous Database)
+-- Grant privileges for DBMS_CLOUD and network access
 GRANT EXECUTE ON DBMS_CLOUD TO SEMANTIC_SEARCH;
-GRANT EXECUTE ON DBMS_CLOUD_AI TO SEMANTIC_SEARCH;
+GRANT EXECUTE ON UTL_HTTP TO SEMANTIC_SEARCH;
 
--- Note: Network ACL for *.oraclecloud.com is automatically configured in Autonomous Database
--- No manual DBMS_NETWORK_ACL_ADMIN configuration required!
+-- Network ACL for Azure AI Foundry was configured in Phase 2, Step 2.4
+-- No additional configuration required here
 
 COMMIT;
 
@@ -163,12 +226,19 @@ COMMIT;
 SELECT username, account_status, default_tablespace
 FROM dba_users
 WHERE username = 'SEMANTIC_SEARCH';
+-- Expected: SEMANTIC_SEARCH | OPEN | USERS
+
+EXIT;
 ```
 
-#### 2.2. Create Staging Tables
+#### 2.3. Create Staging Tables
+
 Connect as SEMANTIC_SEARCH user:
 
 ```sql
+-- Connect to Oracle 23ai
+sqlplus SEMANTIC_SEARCH/<password>@localhost:1521/VECSRCH
+
 -- Create staging tables to hold copies of Siebel data
 -- These are materialized copies for better performance during aggregation
 
@@ -183,7 +253,7 @@ SELECT
     SP_PRDINT_ID,
     CREATED,
     LAST_UPD
-FROM SIEBEL.S_SRV_REQ@SIEBEL_12C_LINK
+FROM SIEBEL.S_SRV_REQ@SIEBEL_19C_LINK
 WHERE 1=0; -- Create empty table with structure
 
 -- Add primary key
@@ -198,7 +268,7 @@ SELECT
     DESC_TEXT,
     CREATED,
     LAST_UPD
-FROM SIEBEL.S_ORDER@SIEBEL_12C_LINK
+FROM SIEBEL.S_ORDER@SIEBEL_19C_LINK
 WHERE 1=0;
 
 -- Add primary key and index
@@ -214,7 +284,7 @@ SELECT
     COMMENTS,
     CREATED,
     LAST_UPD
-FROM SIEBEL.S_EVT_ACT@SIEBEL_12C_LINK
+FROM SIEBEL.S_EVT_ACT@SIEBEL_19C_LINK
 WHERE 1=0;
 
 -- Add primary key and indexes
@@ -231,7 +301,7 @@ SELECT
     PROD_CD,
     CREATED,
     LAST_UPD
-FROM SIEBEL.S_PROD_INT@SIEBEL_12C_LINK
+FROM SIEBEL.S_PROD_INT@SIEBEL_19C_LINK
 WHERE 1=0;
 
 -- Add primary key and index
@@ -250,9 +320,9 @@ END;
 
 ---
 
-### Step 3: Copy Data from Oracle 12c to Oracle Autonomous Database
+### Step 3: Copy Data from Oracle 19c to Oracle Oracle 23ai Database
 
-**Executor:** Database Administrator on Oracle Autonomous Database  
+**Executor:** Database Administrator on Oracle Oracle 23ai Database  
 **Duration:** 30-60 minutes (depending on data volume)
 
 #### 3.1. Initial Full Load
@@ -268,7 +338,7 @@ SELECT
     PROD_CD,
     CREATED,
     LAST_UPD
-FROM SIEBEL.S_PROD_INT@SIEBEL_12C_LINK;
+FROM SIEBEL.S_PROD_INT@SIEBEL_19C_LINK;
 
 COMMIT;
 
@@ -283,7 +353,7 @@ SELECT
     SP_PRDINT_ID,
     CREATED,
     LAST_UPD
-FROM SIEBEL.S_SRV_REQ@SIEBEL_12C_LINK
+FROM SIEBEL.S_SRV_REQ@SIEBEL_19C_LINK
 WHERE SR_STAT_ID IN ('Closed', 'Resolved', 'Completed')
   AND SP_PRDINT_ID IS NOT NULL
   AND DESC_TEXT IS NOT NULL;
@@ -299,7 +369,7 @@ SELECT
     o.DESC_TEXT,
     o.CREATED,
     o.LAST_UPD
-FROM SIEBEL.S_ORDER@SIEBEL_12C_LINK o
+FROM SIEBEL.S_ORDER@SIEBEL_19C_LINK o
 WHERE EXISTS (
     SELECT 1 FROM STG_S_SRV_REQ sr 
     WHERE sr.ROW_ID = o.SR_ID
@@ -316,7 +386,7 @@ SELECT
     a.COMMENTS,
     a.CREATED,
     a.LAST_UPD
-FROM SIEBEL.S_EVT_ACT@SIEBEL_12C_LINK a
+FROM SIEBEL.S_EVT_ACT@SIEBEL_19C_LINK a
 WHERE (
     EXISTS (SELECT 1 FROM STG_S_SRV_REQ sr WHERE sr.ROW_ID = a.SRA_SR_ID)
     OR
@@ -358,7 +428,7 @@ SELECT 'STG_S_PROD_INT', COUNT(*) FROM STG_S_PROD_INT;
 
 ### Step 4: Create Data Aggregation View
 
-**Executor:** Database Administrator on Oracle Autonomous Database  
+**Executor:** Database Administrator on Oracle Oracle 23ai Database  
 **Duration:** 30 minutes
 
 #### 4.1. Create Catalog Hierarchy View
@@ -470,7 +540,7 @@ WHERE ROWNUM <= 5;
 
 ### Step 5: Create Staging Table for Vector Generation
 
-**Executor:** Database Administrator on Oracle Autonomous Database  
+**Executor:** Database Administrator on Oracle Oracle 23ai Database  
 **Duration:** 20-40 minutes (depending on data volume)
 
 #### 5.1. Create the Narrative Staging Table
@@ -538,7 +608,7 @@ WHERE ROWNUM <= 10;
 
 ### Step 6: Set Up Incremental Refresh Process
 
-**Executor:** Database Administrator on Oracle Autonomous Database  
+**Executor:** Database Administrator on Oracle Oracle 23ai Database  
 **Duration:** 15 minutes
 
 #### 6.1. Create Incremental Refresh Procedure
@@ -552,7 +622,7 @@ BEGIN
     DELETE FROM SIEBEL_NARRATIVES_STAGING
     WHERE SR_ID IN (
         SELECT ROW_ID 
-        FROM SIEBEL.S_SRV_REQ@SIEBEL_12C_LINK
+        FROM SIEBEL.S_SRV_REQ@SIEBEL_19C_LINK
         WHERE LAST_UPD >= SYSDATE - p_days_lookback
     );
     
@@ -563,7 +633,7 @@ BEGIN
     MERGE INTO STG_S_SRV_REQ t
     USING (
         SELECT *
-        FROM SIEBEL.S_SRV_REQ@SIEBEL_12C_LINK
+        FROM SIEBEL.S_SRV_REQ@SIEBEL_19C_LINK
         WHERE LAST_UPD >= SYSDATE - p_days_lookback
           AND SR_STAT_ID IN ('Closed', 'Resolved', 'Completed')
           AND SP_PRDINT_ID IS NOT NULL
@@ -592,7 +662,7 @@ BEGIN
     WHERE
         SR_ID IN (
             SELECT ROW_ID 
-            FROM SIEBEL.S_SRV_REQ@SIEBEL_12C_LINK
+            FROM SIEBEL.S_SRV_REQ@SIEBEL_19C_LINK
             WHERE LAST_UPD >= SYSDATE - p_days_lookback
         );
     
@@ -694,7 +764,7 @@ WHERE ROWNUM <= 3;
 
 | Issue | Possible Cause | Solution |
 |-------|---------------|----------|
-| Database link test fails | Network/firewall issue | Check VNet peering, NSG rules, verify Oracle 12c listener is running |
+| Database link test fails | Network/firewall issue | Check VNet peering, NSG rules, verify Oracle 19c listener is running |
 | ORA-12154 TNS error | Connection descriptor syntax error | Verify inline connection string format in database link definition |
 | Very slow data copy | Large data volume, network latency | Use APPEND hint, consider processing during off-peak hours |
 | XMLAGG issues | Very long narratives | Increase PGA memory or process in batches |
@@ -752,3 +822,6 @@ TRUNCATE TABLE STG_S_PROD_INT;
 
 -- Re-run Step 3 and Step 5 from this document
 ```
+
+
+

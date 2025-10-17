@@ -1,11 +1,11 @@
 # Technical Design Document 2: Vector Database and Indexing Pipeline
 
-**Version:** 2.2
-**Date:** 2025-10-17
+**Version:** 3.0  
+**Date:** 2025-10-17  
 **Owner:** AI / Data Engineering Team
 
 ## 1. Objective
-This document provides the technical specifications for generating vector embeddings from the staged Siebel narratives and populating the **Oracle Autonomous Database** vector store. We will use **PL/SQL and DBMS_CLOUD** to call the OCI Generative AI service directly from the database, eliminating the need for external Python scripts. The pre-configured DBMS_CLOUD package in Autonomous Database simplifies OCI service integration.
+This document provides the technical specifications for generating vector embeddings from the staged Siebel narratives and populating the **Oracle Database 23ai** vector store on Azure VM. We will use **PL/SQL and DBMS_CLOUD** to call **Azure AI Foundry's OpenAI Service** directly from the database, eliminating the need for external Python scripts. This approach leverages Oracle 23ai's AI Vector Search capabilities with Azure's unified AI platform.
 
 ## 2. Architecture Overview
 
@@ -15,51 +15,65 @@ SIEBEL_NARRATIVES_STAGING (PROCESSED_FLAG='N')
       ↓
 PL/SQL Procedure: GENERATE_EMBEDDINGS_BATCH
       ↓
-Call OCI GenAI Service via DBMS_CLOUD
+Call Azure AI Foundry OpenAI Service via DBMS_CLOUD (HTTPS)
+      ↓
+Parse JSON response (1536-dimensional vector)
       ↓
 Insert into SIEBEL_KNOWLEDGE_VECTORS
       ↓
 Update PROCESSED_FLAG='Y'
       ↓
-Create HNSW Vector Index
+Create HNSW Vector Index (after all embeddings complete)
 ```
+
+### 2.2. Key Components
+- **Oracle 23ai VM**: Self-managed database with AI Vector Search
+- **Azure AI Foundry**: Unified AI platform hosting OpenAI Service
+- **OpenAI text-embedding-3-small**: 1536-dimensional embedding model
+- **DBMS_CLOUD**: Oracle package for HTTP REST API calls
+- **Network ACLs**: Configured for `*.api.azureml.ms` and `*.openai.azure.com`
 
 ## 3. Implementation Steps
 
-### Step 1: Create OCI Credentials in Oracle Autonomous Database
+### Step 1: Configure Azure AI Foundry Credentials in Oracle 23ai
 
-**Executor:** Database Administrator on Oracle Autonomous Database  
-**Duration:** 20 minutes
+**Executor:** Database Administrator on Oracle 23ai VM  
+**Duration:** 30 minutes
 
-#### 1.1. Obtain OCI API Credentials
+#### 1.1. Obtain Azure AI Foundry API Credentials
 
-Before proceeding, gather the following from OCI Console:
+Before proceeding, gather the following from Azure Portal:
 
-1. **User OCID**: Navigate to Identity → Users → Your User → Copy OCID
-2. **Tenancy OCID**: Profile menu → Tenancy → Copy OCID
-3. **Fingerprint**: Generate an API key pair and note the fingerprint
-4. **Private Key**: Download the private key file (`.pem` format)
-5. **Region**: Note your OCI region (e.g., `us-ashburn-1`)
-6. **Compartment OCID**: Navigate to Identity → Compartments → Your Compartment → Copy OCID
+1. **Azure AI Foundry Workspace Name**: Your workspace identifier
+2. **Azure Region**: e.g., `eastus`, `westus2`, `northeurope`
+3. **API Endpoint**: Format: `https://<workspace-name>.<region>.api.azureml.ms`
+4. **API Key**: Navigate to Azure AI Foundry → Keys and Endpoint → Copy Key 1
+5. **Deployment Name**: The name you gave to your OpenAI deployment (e.g., `text-embedding-3-small`)
 
-#### 1.2. Create OCI Credential in Database
+**Example API Endpoint:**
+```
+https://my-ai-workspace.eastus.api.azureml.ms/openai/deployments/text-embedding-3-small/embeddings?api-version=2024-02-15-preview
+```
+
+#### 1.2. Create Azure AI Foundry Credential in Oracle 23ai
+
+```bash
+# SSH to Oracle 23ai VM
+ssh oracle@<oracle-23ai-vm-ip>
+
+# Connect as SEMANTIC_SEARCH user
+sqlplus SEMANTIC_SEARCH/<password>@localhost:1521/VECSRCH
+```
+
 ```sql
--- Connect as SEMANTIC_SEARCH user
-
--- Read the private key content (you'll need to provide the actual key text)
--- Replace the placeholders with your actual OCI credentials
+-- Create credential for Azure AI Foundry API authentication
+-- Note: Azure uses Bearer token authentication (API key)
 
 BEGIN
   DBMS_CLOUD.CREATE_CREDENTIAL(
-    credential_name => 'OCI_GENAI_CREDENTIAL',
-    user_ocid       => 'ocid1.user.oc1..aaaaaaaa...your_user_ocid',
-    tenancy_ocid    => 'ocid1.tenancy.oc1..aaaaaaaa...your_tenancy_ocid',
-    private_key     => '-----BEGIN PRIVATE KEY-----
-MIIEvQIBADANBgkqhkiG9w0BAQEFAASCBKcwggSjAgEAAoIBAQC...
-...your_private_key_content_here...
-...
------END PRIVATE KEY-----',
-    fingerprint     => 'a1:b2:c3:d4:e5:f6:...'
+    credential_name => 'AZURE_AI_FOUNDRY_CRED',
+    username        => 'AZURE_OPENAI',  -- Placeholder username (required by DBMS_CLOUD)
+    password        => '<your-azure-ai-foundry-api-key>'
   );
 END;
 /
@@ -67,17 +81,132 @@ END;
 -- Verify credential creation
 SELECT credential_name, username, enabled
 FROM USER_CREDENTIALS
-WHERE credential_name = 'OCI_GENAI_CREDENTIAL';
+WHERE credential_name = 'AZURE_AI_FOUNDRY_CRED';
+-- Expected: AZURE_AI_FOUNDRY_CRED | AZURE_OPENAI | ENABLED
+
+COMMIT;
 ```
 
 **Security Best Practice:**
-- Store the private key securely
-- Rotate keys periodically
-- Use dedicated service accounts with minimal permissions
+- Store API keys securely in Azure Key Vault
+- Rotate keys periodically (regenerate Key 2, switch, regenerate Key 1)
+- Use Azure Managed Identity where possible (future enhancement)
+- Never commit API keys to source control
 
-#### 1.3. Test OCI API Connectivity
+#### 1.3. Verify Network ACL Configuration
+
+**Note:** Network ACLs were configured during deployment (Phase 2, Step 2.4). Verify they are in place:
+
 ```sql
--- Test a simple API call to verify connectivity
+-- Verify ACL configuration allows Azure AI Foundry access
+SELECT host, lower_port, upper_port, acl
+FROM dba_network_acls
+WHERE host LIKE '%api.azureml.ms' OR host LIKE '%openai.azure.com';
+
+-- Expected output:
+-- HOST                    LOWER_PORT  UPPER_PORT  ACL
+-- *.api.azureml.ms        443         443         azure_ai_foundry_acl.xml
+-- *.openai.azure.com      443         443         azure_ai_foundry_acl.xml
+```
+
+If ACLs are missing, create them:
+
+```sql
+-- Create and assign ACL (only if not done in deployment)
+BEGIN
+  DBMS_NETWORK_ACL_ADMIN.CREATE_ACL (
+    acl          => 'azure_ai_foundry_acl.xml',
+    description  => 'ACL for Azure AI Foundry API access',
+    principal    => 'SEMANTIC_SEARCH',
+    is_grant     => TRUE,
+    privilege    => 'connect',
+    start_date   => NULL,
+    end_date     => NULL
+  );
+  
+  DBMS_NETWORK_ACL_ADMIN.ADD_PRIVILEGE (
+    acl          => 'azure_ai_foundry_acl.xml',
+    principal    => 'SEMANTIC_SEARCH',
+    is_grant     => TRUE,
+    privilege    => 'resolve'
+  );
+  
+  DBMS_NETWORK_ACL_ADMIN.ASSIGN_ACL (
+    acl          => 'azure_ai_foundry_acl.xml',
+    host         => '*.api.azureml.ms',
+    lower_port   => 443,
+    upper_port   => 443
+  );
+  
+  DBMS_NETWORK_ACL_ADMIN.ASSIGN_ACL (
+    acl          => 'azure_ai_foundry_acl.xml',
+    host         => '*.openai.azure.com',
+    lower_port   => 443,
+    upper_port   => 443
+  );
+  
+  COMMIT;
+END;
+/
+```
+
+#### 1.4. Test Azure AI Foundry API Connectivity
+
+```sql
+-- Test Azure AI Foundry connectivity with a simple embedding call
+SET SERVEROUTPUT ON SIZE UNLIMITED;
+
+DECLARE
+    l_api_endpoint VARCHAR2(500) := 'https://<workspace-name>.<region>.api.azureml.ms/openai/deployments/<deployment-name>/embeddings?api-version=2024-02-15-preview';
+    l_request_body CLOB;
+    l_response CLOB;
+    l_http_status NUMBER;
+BEGIN
+    -- Construct request body
+    l_request_body := '{
+        "input": "test connectivity",
+        "model": "text-embedding-3-small"
+    }';
+    
+    -- Make API call
+    l_response := DBMS_CLOUD.SEND_REQUEST(
+        credential_name => 'AZURE_AI_FOUNDRY_CRED',
+        uri             => l_api_endpoint,
+        method          => DBMS_CLOUD.METHOD_POST,
+        body            => UTL_RAW.CAST_TO_RAW(l_request_body),
+        headers         => JSON_OBJECT(
+            'Content-Type' VALUE 'application/json',
+            'api-key' VALUE (SELECT password FROM user_credentials WHERE credential_name = 'AZURE_AI_FOUNDRY_CRED')
+        )
+    );
+    
+    -- Check response
+    DBMS_OUTPUT.PUT_LINE('Response length: ' || DBMS_LOB.GETLENGTH(l_response) || ' bytes');
+    DBMS_OUTPUT.PUT_LINE('First 200 chars: ' || SUBSTR(l_response, 1, 200));
+    
+    -- Expected: JSON response with "data" array containing embedding vector
+    IF l_response LIKE '%"data"%' THEN
+        DBMS_OUTPUT.PUT_LINE('✓ Azure AI Foundry connectivity test PASSED');
+    ELSE
+        DBMS_OUTPUT.PUT_LINE('✗ Azure AI Foundry connectivity test FAILED');
+    END IF;
+    
+EXCEPTION
+    WHEN OTHERS THEN
+        DBMS_OUTPUT.PUT_LINE('Error: ' || SQLERRM);
+        RAISE;
+END;
+/
+
+EXIT;
+```
+
+**Troubleshooting:**
+- **ORA-29273**: HTTP request failed → Check network ACL configuration
+- **ORA-29270**: Connection refused → Verify firewall allows outbound HTTPS (port 443)
+- **HTTP 401 Unauthorized**: Check API key is correct
+- **HTTP 404 Not Found**: Verify API endpoint URL and deployment name
+- **Timeout errors**: Check network latency to Azure region, consider increasing timeout
 DECLARE
   l_response CLOB;
   l_request_body CLOB;
@@ -115,7 +244,7 @@ END;
 
 ### Step 2: Create Vector Table
 
-**Executor:** Database Administrator on Oracle Autonomous Database  
+**Executor:** Database Administrator on Oracle Oracle 23ai Database  
 **Duration:** 5 minutes
 
 #### 2.1. Create the Vector Table DDL
@@ -127,7 +256,7 @@ CREATE TABLE SIEBEL_KNOWLEDGE_VECTORS (
     CATALOG_ITEM_ID         VARCHAR2(15) NOT NULL,
     CATALOG_PATH            VARCHAR2(4000),
     FULL_NARRATIVE          CLOB,
-    NARRATIVE_VECTOR        VECTOR(1024, FLOAT64), -- Cohere Embed v3.0 uses 1024 dimensions
+    NARRATIVE_VECTOR        VECTOR(1536, FLOAT64), -- OpenAI text-embedding-3-small uses 1536 dimensions
     EMBEDDING_MODEL         VARCHAR2(100) DEFAULT 'cohere.embed-english-v3.0',
     CREATED_DATE            DATE DEFAULT SYSDATE,
     LAST_UPDATED            DATE DEFAULT SYSDATE
@@ -141,7 +270,7 @@ COMMENT ON COLUMN SIEBEL_KNOWLEDGE_VECTORS.SR_ID IS 'Primary key from SIEBEL.S_S
 COMMENT ON COLUMN SIEBEL_KNOWLEDGE_VECTORS.CATALOG_ITEM_ID IS 'Foreign key to the S_PROD_INT table for the final catalog item';
 COMMENT ON COLUMN SIEBEL_KNOWLEDGE_VECTORS.CATALOG_PATH IS 'Full human-readable path of the catalog item';
 COMMENT ON COLUMN SIEBEL_KNOWLEDGE_VECTORS.FULL_NARRATIVE IS 'The complete aggregated text used to generate the vector';
-COMMENT ON COLUMN SIEBEL_KNOWLEDGE_VECTORS.NARRATIVE_VECTOR IS 'The numerical vector representation of the narrative (1024 dimensions)';
+COMMENT ON COLUMN SIEBEL_KNOWLEDGE_VECTORS.NARRATIVE_VECTOR IS 'The numerical vector representation of the narrative (1536 dimensions)';
 
 -- Verify table creation
 DESC SIEBEL_KNOWLEDGE_VECTORS;
@@ -198,7 +327,7 @@ CREATE OR REPLACE PROCEDURE GENERATE_EMBEDDINGS_BATCH(
     l_request_body CLOB;
     l_response CLOB;
     l_vector_json CLOB;
-    l_vector VECTOR(1024, FLOAT64);
+    l_vector VECTOR(1536, FLOAT64);
     
     -- Counters
     v_processed_count NUMBER := 0;
@@ -250,7 +379,7 @@ BEGIN
                     'inputs' VALUE JSON_ARRAY(l_clean_text)
                 ) INTO l_request_body FROM DUAL;
                 
-                -- Call OCI Generative AI service
+                -- Call Azure AI Foundry service
                 l_response := DBMS_CLOUD.SEND_REQUEST(
                     credential_name => 'OCI_GENAI_CREDENTIAL',
                     uri => l_api_url,
@@ -259,7 +388,7 @@ BEGIN
                 );
                 
                 -- Parse the response to extract the vector
-                SELECT JSON_VALUE(l_response, '$.embeddings[0]' RETURNING VECTOR(1024, FLOAT64))
+                SELECT JSON_VALUE(l_response, '$.embeddings[0]' RETURNING VECTOR(1536, FLOAT64))
                 INTO l_vector
                 FROM DUAL;
                 
@@ -373,7 +502,7 @@ WHERE ROWNUM <= 3;
 
 ### Step 4: Process All Narratives in Batches
 
-**Executor:** Database Administrator on Oracle Autonomous Database  
+**Executor:** Database Administrator on Oracle Oracle 23ai Database  
 **Duration:** Several hours (depending on data volume)
 
 #### 4.1. Create Processing Loop Script
@@ -457,7 +586,7 @@ WHERE job_name = 'DAILY_EMBEDDING_GENERATION';
 
 ### Step 5: Create Vector Index
 
-**Executor:** Database Administrator on Oracle Autonomous Database  
+**Executor:** Database Administrator on Oracle Oracle 23ai Database  
 **Duration:** 30-60 minutes (depending on data volume)
 
 #### 5.1. Create HNSW Vector Index
@@ -511,7 +640,7 @@ WHERE table_name = 'SIEBEL_KNOWLEDGE_VECTORS';
 ```sql
 -- Test a sample vector search
 DECLARE
-    l_test_vector VECTOR(1024, FLOAT64);
+    l_test_vector VECTOR(1536, FLOAT64);
 BEGIN
     -- Get a sample vector from the table
     SELECT NARRATIVE_VECTOR INTO l_test_vector
@@ -566,7 +695,7 @@ SELECT
     VECTOR_DIMENSION_COUNT(NARRATIVE_VECTOR) AS DIMENSIONS
 FROM SIEBEL_KNOWLEDGE_VECTORS
 WHERE ROWNUM <= 10;
--- Expected: All should be 1024
+-- Expected: All should be 1536
 
 -- Check for NULL or zero vectors
 SELECT COUNT(*) AS NULL_VECTORS
@@ -634,7 +763,7 @@ END;
 SELECT 
     pool,
     name,
-    ROUND(bytes/1024/1024, 2) AS MB
+    ROUND(bytes/1536/1536, 2) AS MB
 FROM v$sgastat
 WHERE name LIKE '%vector%'
 ORDER BY bytes DESC;
@@ -642,7 +771,7 @@ ORDER BY bytes DESC;
 -- Check PGA usage
 SELECT 
     name,
-    ROUND(value/1024/1024, 2) AS MB
+    ROUND(value/1536/1536, 2) AS MB
 FROM v$pgastat
 WHERE name LIKE '%PGA%';
 ```
@@ -702,3 +831,4 @@ COMMIT;
 Once this TDD is complete, proceed to:
 - **TDD 3**: Create the ORDS-based Semantic Search API that queries these vectors
 - The vector index created here will be used for high-performance similarity searches
+
