@@ -6,6 +6,28 @@
 
 ---
 
+## Important Architecture Note
+
+**Oracle Autonomous Database Deployment Model:**
+
+This solution uses **Oracle Database Service for Azure (ODSA)**, which deploys Oracle Autonomous Database **within Microsoft Azure infrastructure**. This is not a traditional cross-cloud deployment.
+
+**Key Points:**
+- ✅ **Autonomous Database runs within Azure** - Provisioned through the Azure Portal as a native Azure service
+- ✅ **Private connectivity** - Access via Azure Private Endpoints (no public internet traversal)
+- ✅ **Azure-native experience** - Appears as an Azure resource in your subscription
+- ✅ **Unified management** - Managed through Azure Portal alongside other Azure resources
+- ✅ **Low latency** - Direct in-region connectivity between Azure VMs/Container Apps and Autonomous Database
+- ⚠️ **OCI backend services** - Only OCI Generative AI service is accessed via the Azure-OCI interconnect for embedding generation
+
+**Why ODSA?**
+- Keeps entire application stack within Azure (Siebel VM, Container Apps, and Autonomous Database)
+- Simplifies networking (private endpoints instead of cross-cloud VPN)
+- Provides Oracle's managed database PaaS benefits within Azure's ecosystem
+- Single-pane-of-glass management through Azure Portal
+
+---
+
 ## Table of Contents
 
 1. [Overview Architecture](#1-overview-architecture)
@@ -68,36 +90,35 @@ graph TB
             Streamlit["Streamlit Test App<br/>(Azure Container Apps)"]
         end
         
+        subgraph ODSA["Oracle Database Service for Azure (ODSA)"]
+            subgraph ADBService["Autonomous Database (Managed by Oracle)"]
+                ORDS["Pre-configured ORDS<br/>(REST API Layer)"]
+                VectorEngine["AI Vector Search Engine<br/>(HNSW Index)"]
+                PLSQLLogic["PL/SQL Search Logic<br/>(Business Rules)"]
+            end
+        end
+        
         subgraph AzureNetwork["Azure Networking"]
             VNet["Virtual Network<br/>(Private Connectivity)"]
             NSG["Network Security Groups"]
+            PrivateEndpoint["Private Endpoint<br/>(to ADB)"]
         end
     end
     
-    subgraph Interconnect["Azure-OCI Private Backbone"]
-        ODSA["Oracle Database Service for Azure<br/>(Low-latency < 2ms)"]
-    end
-    
-    subgraph OCICloud["Oracle Cloud Infrastructure"]
-        subgraph ADBService["Autonomous Database Service"]
-            ORDS["Pre-configured ORDS<br/>(REST API Layer)"]
-            VectorEngine["AI Vector Search Engine<br/>(HNSW Index)"]
-            PLSQLLogic["PL/SQL Search Logic<br/>(Business Rules)"]
-        end
-        
+    subgraph OCIBackend["OCI Backend Services (via Azure-OCI Interconnect)"]
         GenAIService["OCI Generative AI<br/>(Cohere Embed v3.0)<br/>1024-dimensional vectors"]
     end
     
     EndUser -->|1. Search Query| SiebelUI
     TestUser -->|1. Test Query| Streamlit
     
-    SiebelUI -->|2. HTTPS POST| ORDS
-    Streamlit -->|2. HTTPS POST| ORDS
+    SiebelUI -->|2. HTTPS POST<br/>via Private Endpoint| ORDS
+    Streamlit -->|2. HTTPS POST<br/>via Private Endpoint| ORDS
     
-    SiebelDB -.->|Batch: Database Link| VectorEngine
+    SiebelDB -.->|Batch: Database Link<br/>via Private Endpoint| VectorEngine
     
     ORDS -->|3. Execute| PLSQLLogic
-    PLSQLLogic -->|4. Embed Query| GenAIService
+    PLSQLLogic -->|4. Embed Query<br/>via Azure-OCI Interconnect| GenAIService
     GenAIService -->|5. Return Vector| PLSQLLogic
     PLSQLLogic -->|6. Vector Search| VectorEngine
     VectorEngine -->|7. Top Matches| PLSQLLogic
@@ -108,18 +129,18 @@ graph TB
     SiebelUI -->|10. Display| EndUser
     Streamlit -->|10. Display| TestUser
     
-    VNet -.->|Private Link| ODSA
-    ODSA -.->|Secure Connection| ADBService
+    VNet -.->|Private Connectivity| PrivateEndpoint
+    PrivateEndpoint -.->|Internal Access| ADBService
     
     classDef azure fill:#0078D4,stroke:#004578,color:#fff
+    classDef odsa fill:#8B4789,stroke:#5C2D5A,color:#fff
     classDef oci fill:#C74634,stroke:#8B2F23,color:#fff
     classDef user fill:#107C10,stroke:#094509,color:#fff
-    classDef data fill:#FFB900,stroke:#C79400,color:#000
     
-    class AzureCloud,SiebelEnv,TestEnv,AzureNetwork azure
-    class OCICloud,ADBService,GenAIService oci
+    class AzureCloud,SiebelEnv,TestEnv,AzureNetwork,VNet,NSG,PrivateEndpoint azure
+    class ODSA,ADBService,ORDS,VectorEngine,PLSQLLogic odsa
+    class OCIBackend,GenAIService oci
     class Users,EndUser,TestUser user
-    class Interconnect,ODSA data
 ```
 
 ---
@@ -472,16 +493,14 @@ graph TB
         end
     end
     
-    subgraph Interconnect["Azure-OCI FastConnect"]
-        ODSA["Private Backbone<br/>Latency < 2ms"]
+    subgraph ODSAService["Oracle Database Service for Azure (within Azure)"]
+        subgraph ADB["Autonomous Database"]
+            ORDS["ORDS Endpoint<br/>*.adb.oraclecloudapps.com"]
+            VectorDB["Vector Database<br/>AI Vector Search"]
+        end
     end
     
-    subgraph OCIRegion["OCI Region: Ashburn"]
-        subgraph VCN["Virtual Cloud Network"]
-            ADB["Autonomous Database<br/>Private Endpoint"]
-            ORDS["ORDS Endpoint<br/>*.adb.oraclecloudapps.com"]
-        end
-        
+    subgraph OCIBackend["OCI Backend (via Azure-OCI Interconnect)"]
         GenAI["OCI Generative AI<br/>(Regional Service)"]
     end
     
@@ -495,11 +514,10 @@ graph TB
     TestApp -->|HTTPS:443| PrivateEndpoint
     
     PrivateEndpoint -.->|NSG3| NSG3
-    PrivateEndpoint -->|Private| ODSA
+    PrivateEndpoint -->|Private Link<br/>within Azure| ADB
     
-    ODSA -->|No Internet| ADB
     ADB -->|Internal| ORDS
-    ADB -->|HTTPS| GenAI
+    ADB -->|HTTPS via<br/>Azure-OCI Interconnect| GenAI
     
     Bastion -.->|Secure Access| SiebelVM
     Firewall -.->|Optional Filter| VNET
@@ -507,14 +525,14 @@ graph TB
     classDef internet fill:#5E5E5E,stroke:#2E2E2E,color:#fff
     classDef azure fill:#0078D4,stroke:#004578,color:#fff
     classDef security fill:#107C10,stroke:#094509,color:#fff
-    classDef interconnect fill:#FFB900,stroke:#C79400,color:#000
+    classDef odsa fill:#8B4789,stroke:#5C2D5A,color:#fff
     classDef oci fill:#C74634,stroke:#8B2F23,color:#fff
     
     class Internet,Users internet
     class AzureRegion,VNET,AppSubnet,ContainerSubnet,PrivateSubnet,Management,SiebelVM,Oracle12c,ContainerEnv,TestApp,PrivateEndpoint,Bastion,Firewall azure
     class SecurityGroup,NSG1,NSG2,NSG3 security
-    class Interconnect,ODSA interconnect
-    class OCIRegion,VCN,ADB,ORDS,GenAI oci
+    class ODSAService,ADB,ORDS,VectorDB odsa
+    class OCIBackend,GenAI oci
 ```
 
 ### 4.2. Traffic Flow Patterns

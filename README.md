@@ -42,33 +42,32 @@ graph TB
             Streamlit["Streamlit App<br/>(Azure Container Apps)"]
         end
         
-        VNet["Azure Virtual Network<br/>(Private Connectivity)"]
-    end
-    
-    subgraph Interconnect["Azure-OCI Private Backbone"]
-        ODSA["Oracle Database Service for Azure<br/>(Low-latency < 2ms)"]
-    end
-    
-    subgraph OCI["Oracle Cloud Infrastructure"]
-        subgraph ADB["Autonomous Database"]
-            ORDS["Pre-configured ORDS<br/>(REST API)"]
-            VectorDB["AI Vector Search<br/>(HNSW Index)"]
-            PLSQL["PL/SQL Logic<br/>(Business Rules)"]
+        subgraph ODSA["Oracle Database Service for Azure (ODSA)"]
+            subgraph ADB["Autonomous Database (Managed by Oracle)"]
+                ORDS["Pre-configured ORDS<br/>(REST API)"]
+                VectorDB["AI Vector Search<br/>(HNSW Index)"]
+                PLSQL["PL/SQL Logic<br/>(Business Rules)"]
+            end
         end
         
+        VNet["Azure Virtual Network<br/>(Private Connectivity)"]
+        PrivateEndpoint["Private Endpoint<br/>(to ADB)"]
+    end
+    
+    subgraph OCIBackend["OCI Backend Services (via Azure-OCI Interconnect)"]
         GenAI["OCI Generative AI<br/>(Cohere Embed v3.0)"]
     end
     
     EndUser -->|1. Search Query| Siebel
     EndUser -.->|Test/QA| Streamlit
     
-    Siebel -->|2. HTTPS POST| ORDS
-    Streamlit -.->|2. HTTPS POST| ORDS
+    Siebel -->|2. HTTPS POST<br/>via Private Endpoint| ORDS
+    Streamlit -.->|2. HTTPS POST<br/>via Private Endpoint| ORDS
     
-    Oracle12c -.->|Batch: Nightly ETL| VectorDB
+    Oracle12c -.->|Batch: Nightly ETL<br/>via Private Endpoint| VectorDB
     
     ORDS -->|3. Execute| PLSQL
-    PLSQL -->|4. Embed Query| GenAI
+    PLSQL -->|4. Embed Query<br/>via Azure-OCI Interconnect| GenAI
     GenAI -->|5. Return Vector| PLSQL
     PLSQL -->|6. Vector Search| VectorDB
     VectorDB -->|7. Top Matches| PLSQL
@@ -77,18 +76,18 @@ graph TB
     ORDS -->|9. Results| Siebel
     ORDS -.->|9. Results| Streamlit
     
-    VNet -.->|Private Link| ODSA
-    ODSA -.->|Secure Connection| ADB
+    VNet -.->|Private Connectivity| PrivateEndpoint
+    PrivateEndpoint -.->|Internal Access| ADB
     
     classDef azure fill:#0078D4,stroke:#004578,color:#fff
+    classDef odsa fill:#8B4789,stroke:#5C2D5A,color:#fff
     classDef oci fill:#C74634,stroke:#8B2F23,color:#fff
     classDef user fill:#107C10,stroke:#094509,color:#fff
-    classDef interconnect fill:#FFB900,stroke:#C79400,color:#000
     
-    class Azure,SiebelEnv,TestEnv,VNet azure
-    class OCI,ADB,GenAI oci
+    class Azure,SiebelEnv,TestEnv,VNet,PrivateEndpoint azure
+    class ODSA,ADB,ORDS,VectorDB,PLSQL odsa
+    class OCIBackend,GenAI oci
     class Users,EndUser user
-    class Interconnect,ODSA interconnect
 ```
 
 ### 3.2. Data Flows

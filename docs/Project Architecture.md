@@ -30,52 +30,56 @@ graph TB
             StreamlitApp["Streamlit Test Application<br/>(Python + Plotly)"]
         end
         
+        subgraph ODSA["Oracle Database Service for Azure (ODSA)"]
+            subgraph ADB["Oracle Autonomous Database"]
+                ORDS["Pre-configured ORDS<br/>(REST API Layer)"]
+                VectorDB["Vector Store<br/>(AI Vector Search)"]
+                PLSQL["PL/SQL Search Logic<br/>(GET_SEMANTIC_RECOMMENDATIONS)"]
+                DBMS_CLOUD["DBMS_CLOUD Package<br/>(OCI Service Integration)"]
+            end
+        end
+        
         subgraph Network["Azure Virtual Network"]
             NSG["Network Security Groups<br/>(Firewall Rules)"]
-            PrivateEndpoint["Private Endpoint<br/>(Azure-OCI Interconnect)"]
+            PrivateEndpoint["Private Endpoint<br/>(to Autonomous DB)"]
         end
     end
     
-    subgraph OCI["Oracle Cloud Infrastructure (via ODSA)"]
-        subgraph ADB["Oracle Autonomous Database"]
-            ORDS["Pre-configured ORDS<br/>(REST API Layer)"]
-            VectorDB["Vector Store<br/>(AI Vector Search)"]
-            PLSQL["PL/SQL Search Logic<br/>(GET_SEMANTIC_RECOMMENDATIONS)"]
-            DBMS_CLOUD["DBMS_CLOUD Package<br/>(OCI Service Integration)"]
-        end
-        
+    subgraph OCIBackend["OCI Backend Services (via Azure-OCI Interconnect)"]
         GenAI["OCI Generative AI Service<br/>(Cohere Embed v3.0)"]
     end
     
     User["End Users"] -->|HTTPS| Siebel
-    Siebel -->|eScript API Call| ORDS
+    Siebel -->|eScript API Call<br/>via Private Endpoint| ORDS
     Siebel -.->|Database Link| Oracle12c
-    Oracle12c -->|Data Extraction<br/>Batch Process| VectorDB
+    Oracle12c -->|Data Extraction<br/>Batch Process<br/>via Private Endpoint| VectorDB
     
-    StreamlitApp -->|HTTPS REST API| ORDS
+    StreamlitApp -->|HTTPS REST API<br/>via Private Endpoint| ORDS
     
     ORDS -->|Execute| PLSQL
     PLSQL -->|Vector Search| VectorDB
     PLSQL -->|Embed Text| DBMS_CLOUD
-    DBMS_CLOUD -->|HTTPS| GenAI
+    DBMS_CLOUD -->|HTTPS via<br/>Azure-OCI Interconnect| GenAI
     
     VectorDB -->|JSON Response| ORDS
     ORDS -->|JSON| Siebel
     ORDS -->|JSON| StreamlitApp
     
-    PrivateEndpoint -.->|Secure Interconnect| ADB
+    PrivateEndpoint -.->|Internal Access| ADB
     NSG -.->|Traffic Control| SiebelVM
+    NSG -.->|Traffic Control| TestInfra
     
     classDef azure fill:#0078D4,stroke:#004578,color:#fff
+    classDef odsa fill:#8B4789,stroke:#5C2D5A,color:#fff
     classDef oci fill:#C74634,stroke:#8B2F23,color:#fff
     classDef database fill:#336791,stroke:#1E3A5F,color:#fff
     classDef api fill:#68B984,stroke:#3D7A52,color:#fff
     classDef app fill:#FF6B35,stroke:#C74634,color:#fff
     
-    class Azure,SiebelVM,TestInfra,Network azure
-    class OCI,ADB,GenAI oci
+    class Azure,SiebelVM,TestInfra,Network,NSG,PrivateEndpoint azure
+    class ODSA,ADB,ORDS,PLSQL,DBMS_CLOUD odsa
+    class OCIBackend,GenAI oci
     class Oracle12c,VectorDB database
-    class ORDS,PLSQL,DBMS_CLOUD api
     class Siebel,StreamlitApp app
 ```
 
@@ -237,17 +241,15 @@ graph TB
         end
     end
     
-    subgraph OracleBackbone["Azure-OCI Interconnect (Private Backbone)"]
-        FastConnect["Private Interconnect<br/>(Low Latency < 2ms)"]
-    end
-    
-    subgraph OCIRegion["Oracle Cloud Infrastructure"]
+    subgraph ODSAService["Oracle Database Service for Azure (within Azure)"]
         subgraph ADB["Oracle Autonomous Database"]
             ORDS["ORDS Endpoint<br/>(https://*.adb.oraclecloudapps.com)"]
             VectorDB["Encrypted Vector Store<br/>(TDE Enabled)"]
             DatabaseVault["Database Vault<br/>(Access Control)"]
         end
-        
+    end
+    
+    subgraph OCIBackend["OCI Backend Services (via Azure-OCI Interconnect)"]
         GenAI["OCI Generative AI Service<br/>(HTTPS Only)"]
     end
     
@@ -260,26 +262,25 @@ graph TB
     APIM -->|Secure Request| PrivateEndpoint
     SiebelVM -.->|Alternative: Direct| PrivateEndpoint
     
-    PrivateEndpoint -->|Private Link| FastConnect
-    FastConnect -->|No Public Internet| ORDS
+    PrivateEndpoint -->|Private Link<br/>within Azure| ADB
     
     ORDS -->|Internal| VectorDB
     ORDS -->|Internal| DatabaseVault
-    VectorDB -->|HTTPS| GenAI
+    VectorDB -->|HTTPS via<br/>Azure-OCI Interconnect| GenAI
     
     KeyVault -.->|Secrets| SiebelVM
     KeyVault -.->|Secrets| ContainerApps
     KeyVault -.->|Secrets| APIM
     
     classDef azure fill:#0078D4,stroke:#004578,color:#fff
+    classDef odsa fill:#8B4789,stroke:#5C2D5A,color:#fff
     classDef oci fill:#C74634,stroke:#8B2F23,color:#fff
     classDef security fill:#107C10,stroke:#094509,color:#fff
-    classDef network fill:#5E5E5E,stroke:#2E2E2E,color:#fff
     
-    class AzureRegion,AzureVNet,AppSubnet,PrivateEndpointSubnet,Optional azure
-    class OCIRegion,ADB,GenAI oci
+    class AzureRegion,AzureVNet,AppSubnet,PrivateEndpointSubnet,Optional,SiebelVM,ContainerApps azure
+    class ODSAService,ADB,ORDS,VectorDB odsa
+    class OCIBackend,GenAI oci
     class NSG,Firewall,APIM,KeyVault,DatabaseVault,PrivateEndpoint security
-    class FastConnect network
 ```
 
 ### 5.2. Security Layers
