@@ -1029,7 +1029,7 @@ graph TB
     end
     
     subgraph SiebelBusiness["Siebel Business Layer"]
-        BS["SemanticSearch_BS<br/>(Business Service)"]
+        BS["SemanticSearchAPIService<br/>(Business Service)"]
         NS["Named Subsystem<br/>(HTTP Handler)"]
         Workflow["Workflow Process<br/>(Optional)"]
     end

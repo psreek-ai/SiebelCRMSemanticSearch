@@ -2531,7 +2531,7 @@ sqlplus SEMANTIC_SEARCH/<password>@localhost:1521/VECSRCH
 -- Delete ORDS handler
 BEGIN
     ORDS.DELETE_HANDLER(
-        p_module_name => 'siebel_search',
+        p_module_name => 'siebel',
         p_pattern => 'search',
         p_method => 'POST'
     );
@@ -2542,7 +2542,7 @@ END;
 -- Delete template
 BEGIN
     ORDS.DELETE_TEMPLATE(
-        p_module_name => 'siebel_search',
+        p_module_name => 'siebel',
         p_pattern => 'search'
     );
     COMMIT;
@@ -2552,7 +2552,7 @@ END;
 -- Delete module
 BEGIN
     ORDS.DELETE_MODULE(
-        p_module_name => 'siebel_search'
+        p_module_name => 'siebel'
     );
     COMMIT;
 END;

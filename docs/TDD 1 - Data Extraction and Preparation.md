@@ -318,6 +318,44 @@ END;
 /
 ```
 
+#### 2.5. Add Enhanced Columns for Improved Refresh Process
+
+**Important:** These columns support the improved MERGE-based refresh logic and error tracking.
+
+```sql
+-- Add timestamp columns to staging table for tracking
+ALTER TABLE SIEBEL_NARRATIVES_STAGING 
+ADD (
+    CREATED_DATE DATE DEFAULT SYSDATE,
+    UPDATED_DATE DATE DEFAULT SYSDATE,
+    ERROR_MESSAGE VARCHAR2(500)
+);
+
+-- Create index on updated date for performance
+CREATE INDEX IDX_NARRATIVES_STG_UPD ON SIEBEL_NARRATIVES_STAGING(UPDATED_DATE);
+
+-- Create refresh log table for auditing
+CREATE TABLE STAGING_REFRESH_LOG (
+    LOG_ID NUMBER GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+    REFRESH_DATE DATE,
+    DAYS_LOOKBACK NUMBER,
+    SRV_REQ_PROCESSED NUMBER,
+    NARRATIVES_PROCESSED NUMBER,
+    STATUS VARCHAR2(20),
+    ERROR_MESSAGE VARCHAR2(500)
+);
+
+-- Add index for log queries
+CREATE INDEX IDX_REFRESH_LOG_DATE ON STAGING_REFRESH_LOG(REFRESH_DATE);
+
+-- Gather statistics
+BEGIN
+    DBMS_STATS.GATHER_TABLE_STATS('SEMANTIC_SEARCH', 'SIEBEL_NARRATIVES_STAGING');
+    DBMS_STATS.GATHER_TABLE_STATS('SEMANTIC_SEARCH', 'STAGING_REFRESH_LOG');
+END;
+/
+```
+
 ---
 
 ### Step 3: Copy Data from Oracle 19c to Oracle 23ai
@@ -616,20 +654,13 @@ WHERE ROWNUM <= 10;
 CREATE OR REPLACE PROCEDURE REFRESH_STAGING_DATA (
     p_days_lookback IN NUMBER DEFAULT 1
 ) AS
-    v_count NUMBER;
+    v_srv_req_count NUMBER;
+    v_narratives_count NUMBER;
 BEGIN
-    -- Delete records for SRs that have been updated
-    DELETE FROM SIEBEL_NARRATIVES_STAGING
-    WHERE SR_ID IN (
-        SELECT ROW_ID 
-        FROM SIEBEL.S_SRV_REQ@SIEBEL_19C_LINK
-        WHERE LAST_UPD >= SYSDATE - p_days_lookback
-    );
+    DBMS_OUTPUT.PUT_LINE('Starting staging data refresh...');
+    DBMS_OUTPUT.PUT_LINE('Lookback period: ' || p_days_lookback || ' days');
     
-    v_count := SQL%ROWCOUNT;
-    DBMS_OUTPUT.PUT_LINE('Deleted ' || v_count || ' existing records for refresh');
-    
-    -- Refresh staging tables for updated records
+    -- Step 1: Refresh staging tables using MERGE
     MERGE INTO STG_S_SRV_REQ t
     USING (
         SELECT *
@@ -649,31 +680,106 @@ BEGIN
         INSERT (ROW_ID, SR_NUM, SR_TITLE, DESC_TEXT, SR_STAT_ID, SP_PRDINT_ID, CREATED, LAST_UPD)
         VALUES (s.ROW_ID, s.SR_NUM, s.SR_TITLE, s.DESC_TEXT, s.SR_STAT_ID, s.SP_PRDINT_ID, s.CREATED, s.LAST_UPD);
     
+    v_srv_req_count := SQL%ROWCOUNT;
+    DBMS_OUTPUT.PUT_LINE('Service Requests processed: ' || v_srv_req_count);
     COMMIT;
     
-    -- Reinsert refreshed narratives
-    INSERT INTO SIEBEL_NARRATIVES_STAGING (
-        SR_ID, SR_NUM, CATALOG_ITEM_ID, CATALOG_PATH, FULL_NARRATIVE
-    )
-    SELECT
-        SR_ID, SR_NUM, FINAL_CATALOG_ITEM_ID, CATALOG_PATH, FULL_NARRATIVE_WITH_CONTEXT
-    FROM
-        VW_AGGREGATED_NARRATIVES
-    WHERE
-        SR_ID IN (
-            SELECT ROW_ID 
-            FROM SIEBEL.S_SRV_REQ@SIEBEL_19C_LINK
-            WHERE LAST_UPD >= SYSDATE - p_days_lookback
+    -- Step 2: Refresh narratives using MERGE (more efficient than DELETE/INSERT)
+    MERGE INTO SIEBEL_NARRATIVES_STAGING t
+    USING (
+        SELECT
+            SR_ID,
+            SR_NUM,
+            FINAL_CATALOG_ITEM_ID AS CATALOG_ITEM_ID,
+            CATALOG_PATH,
+            FULL_NARRATIVE_WITH_CONTEXT AS FULL_NARRATIVE
+        FROM
+            VW_AGGREGATED_NARRATIVES
+        WHERE
+            SR_ID IN (
+                SELECT ROW_ID 
+                FROM SIEBEL.S_SRV_REQ@SIEBEL_19C_LINK
+                WHERE LAST_UPD >= SYSDATE - p_days_lookback
+            )
+    ) s ON (t.SR_ID = s.SR_ID)
+    WHEN MATCHED THEN
+        UPDATE SET
+            t.SR_NUM = s.SR_NUM,
+            t.CATALOG_ITEM_ID = s.CATALOG_ITEM_ID,
+            t.CATALOG_PATH = s.CATALOG_PATH,
+            t.FULL_NARRATIVE = s.FULL_NARRATIVE,
+            t.PROCESSED_FLAG = 'N',  -- Reset to reprocess
+            t.PROCESSED_DATE = NULL,
+            t.ERROR_MESSAGE = NULL,
+            t.UPDATED_DATE = SYSDATE
+    WHEN NOT MATCHED THEN
+        INSERT (
+            SR_ID, 
+            SR_NUM, 
+            CATALOG_ITEM_ID, 
+            CATALOG_PATH, 
+            FULL_NARRATIVE,
+            PROCESSED_FLAG,
+            CREATED_DATE,
+            UPDATED_DATE
+        )
+        VALUES (
+            s.SR_ID,
+            s.SR_NUM,
+            s.CATALOG_ITEM_ID,
+            s.CATALOG_PATH,
+            s.FULL_NARRATIVE,
+            'N',
+            SYSDATE,
+            SYSDATE
         );
     
-    v_count := SQL%ROWCOUNT;
-    DBMS_OUTPUT.PUT_LINE('Inserted ' || v_count || ' new/updated records');
-    
+    v_narratives_count := SQL%ROWCOUNT;
+    DBMS_OUTPUT.PUT_LINE('Narratives processed: ' || v_narratives_count);
     COMMIT;
+    
+    -- Log refresh activity
+    INSERT INTO STAGING_REFRESH_LOG (
+        REFRESH_DATE,
+        DAYS_LOOKBACK,
+        SRV_REQ_PROCESSED,
+        NARRATIVES_PROCESSED,
+        STATUS
+    ) VALUES (
+        SYSDATE,
+        p_days_lookback,
+        v_srv_req_count,
+        v_narratives_count,
+        'SUCCESS'
+    );
+    COMMIT;
+    
+    DBMS_OUTPUT.PUT_LINE('Staging refresh completed successfully');
     
 EXCEPTION
     WHEN OTHERS THEN
         ROLLBACK;
+        
+        -- Log failure
+        BEGIN
+            INSERT INTO STAGING_REFRESH_LOG (
+                REFRESH_DATE,
+                DAYS_LOOKBACK,
+                STATUS,
+                ERROR_MESSAGE
+            ) VALUES (
+                SYSDATE,
+                p_days_lookback,
+                'FAILED',
+                SUBSTR(SQLERRM, 1, 500)
+            );
+            COMMIT;
+        EXCEPTION
+            WHEN OTHERS THEN
+                NULL; -- Ignore logging errors
+        END;
+        
+        DBMS_OUTPUT.PUT_LINE('ERROR: ' || SQLERRM);
         RAISE;
 END REFRESH_STAGING_DATA;
 /
@@ -691,7 +797,7 @@ BEGIN
         start_date      => SYSTIMESTAMP,
         repeat_interval => 'FREQ=DAILY; BYHOUR=2; BYMINUTE=0; BYSECOND=0',
         enabled         => TRUE,
-        comments        => 'Daily refresh of staging data from Siebel 12c'
+        comments        => 'Daily refresh of staging data from Siebel 19c'
     );
     
     -- Set the parameter for lookback days

@@ -167,12 +167,95 @@ curl http://localhost:8080/ords/semantic_search/
 
 ---
 
+### Step 2A: Create Secure API Configuration (Security Best Practice)
+
+**Executor:** Database Administrator  
+**Duration:** 10 minutes
+
+**Important:** This step implements secure API key storage instead of hardcoding keys in procedures.
+
+#### 2A.1. Create Secure Configuration Table
+
+```sql
+-- Connect as SEMANTIC_SEARCH user
+
+-- Create secure API configuration table
+CREATE TABLE API_SECURE_CONFIG (
+    CONFIG_KEY VARCHAR2(100) PRIMARY KEY,
+    CONFIG_VALUE VARCHAR2(4000),
+    DESCRIPTION VARCHAR2(500),
+    CREATED_DATE DATE DEFAULT SYSDATE,
+    LAST_UPDATED DATE DEFAULT SYSDATE,
+    IS_ENCRYPTED CHAR(1) DEFAULT 'N'
+);
+
+-- Restrict access
+REVOKE ALL ON API_SECURE_CONFIG FROM PUBLIC;
+
+-- Insert API key (replace with your actual secure key)
+INSERT INTO API_SECURE_CONFIG (CONFIG_KEY, CONFIG_VALUE, DESCRIPTION, IS_ENCRYPTED)
+VALUES ('ORDS_API_KEY', 'your_secure_api_key_here_' || DBMS_RANDOM.STRING('X', 32), 
+        'ORDS API authentication key', 'N');
+
+COMMIT;
+
+-- Create helper function to retrieve secure values
+CREATE OR REPLACE FUNCTION GET_SECURE_CONFIG(p_key VARCHAR2) 
+RETURN VARCHAR2 AS
+    l_value VARCHAR2(4000);
+BEGIN
+    SELECT CONFIG_VALUE INTO l_value
+    FROM API_SECURE_CONFIG
+    WHERE CONFIG_KEY = p_key;
+    
+    RETURN l_value;
+EXCEPTION
+    WHEN NO_DATA_FOUND THEN
+        RETURN NULL;
+END;
+/
+
+-- Create search log table for analytics
+CREATE TABLE SEARCH_LOG (
+    SEARCH_ID RAW(16) PRIMARY KEY,
+    QUERY_TEXT CLOB,
+    RESULT_COUNT NUMBER,
+    SEARCH_TIMESTAMP TIMESTAMP DEFAULT SYSTIMESTAMP,
+    RESPONSE_TIME_MS NUMBER
+);
+
+CREATE INDEX IDX_SEARCH_LOG_TS ON SEARCH_LOG(SEARCH_TIMESTAMP);
+
+COMMIT;
+```
+
+#### 2A.2. Verify Configuration
+
+```sql
+-- Verify secure config table
+SELECT CONFIG_KEY, DESCRIPTION, CREATED_DATE 
+FROM API_SECURE_CONFIG;
+
+-- Test secure config function
+SELECT GET_SECURE_CONFIG('ORDS_API_KEY') AS API_KEY_EXISTS
+FROM DUAL;
+
+EXIT;
+```
+
+---
+
 ### Step 3: Create PL/SQL Search Procedure
 
 **Executor:** PL/SQL Developer  
 **Duration:** 30 minutes
 
 #### 3.1. Create Main Search Procedure
+
+**Important Note:** This improved version includes:
+- ✅ Explicit NO_DATA_FOUND handling for zero results with user-friendly messages
+- ✅ Optimized logging - captures result count during aggregation (no JSON reparsing)
+- ✅ Analytics tracking via SEARCH_LOG table
 
 ```sql
 -- Connect as SEMANTIC_SEARCH user
@@ -187,15 +270,17 @@ CREATE OR REPLACE PROCEDURE GET_SEMANTIC_RECOMMENDATIONS (
     l_api_response      CLOB;
     l_api_req_body      CLOB;
     l_embedding_url     VARCHAR2(512);
-    l_search_id         VARCHAR2(64);
+    l_search_id         RAW(16);  -- Changed to RAW for better performance
+    l_result_count      NUMBER := 0;  -- NEW: Track results during aggregation
     
-    -- Configuration variables for Azure AI Foundry (customize for your environment)
+    -- Configuration variables for Azure AI Foundry
     l_workspace_endpoint VARCHAR2(500) := 'https://<workspace-name>.<region>.api.azureml.ms';
     l_deployment_name    VARCHAR2(100) := 'text-embedding-3-small';
     l_api_version        VARCHAR2(50) := '2024-02-15-preview';
     
     -- Exception handling
     l_error_message     VARCHAR2(4000);
+    l_start_time        TIMESTAMP := SYSTIMESTAMP;
     
 BEGIN
     -- Generate unique search ID for tracking
@@ -213,21 +298,18 @@ BEGIN
     -- Build Azure AI Foundry with OpenAI Service embedding URL
     l_embedding_url := l_workspace_endpoint || '/openai/deployments/' || l_deployment_name || '/embeddings?api-version=' || l_api_version;
     
-    -- Step 1: Generate vector for the user query using Azure AI Foundry with OpenAI Service
+    -- Step 1: Generate vector for the user query
     BEGIN
-        -- Clean the query text
         DECLARE
             l_clean_query CLOB;
         BEGIN
             l_clean_query := CLEAN_TEXT_FOR_EMBEDDING(p_query_text);
             
-            -- Build API request body for Azure AI Foundry
             SELECT JSON_OBJECT(
                 'input' VALUE l_clean_query,
                 'model' VALUE l_deployment_name
             ) INTO l_api_req_body FROM DUAL;
             
-            -- Call Azure AI Foundry OpenAI service
             l_api_response := DBMS_CLOUD.SEND_REQUEST(
                 credential_name => 'AZURE_AI_FOUNDRY_CRED',
                 uri             => l_embedding_url,
@@ -235,7 +317,6 @@ BEGIN
                 body            => UTL_RAW.CAST_TO_RAW(l_api_req_body)
             );
             
-            -- Extract the vector from the Azure OpenAI JSON response
             SELECT JSON_VALUE(l_api_response, '$.data[0].embedding' RETURNING VECTOR(1536, FLOAT32))
             INTO l_query_vector
             FROM DUAL;
@@ -253,7 +334,6 @@ BEGIN
     -- Step 2: Perform vector similarity search and aggregate results
     BEGIN
         WITH similarity_scores AS (
-            -- Find most similar vectors
             SELECT
                 v.SR_ID,
                 v.CATALOG_ITEM_ID,
@@ -266,10 +346,9 @@ BEGIN
                 v.NARRATIVE_VECTOR IS NOT NULL
             ORDER BY
                 VECTOR_DISTANCE(v.NARRATIVE_VECTOR, l_query_vector, COSINE) ASC
-            FETCH FIRST 100 ROWS ONLY  -- Get top 100 similar records
+            FETCH FIRST 100 ROWS ONLY
         ),
         catalog_aggregation AS (
-            -- Aggregate by catalog item and rank
             SELECT
                 CATALOG_ITEM_ID,
                 CATALOG_PATH,
@@ -286,29 +365,68 @@ BEGIN
                 AVG_RELEVANCE_SCORE DESC
             FETCH FIRST p_top_k ROWS ONLY
         )
-        -- Build final JSON response
-        SELECT JSON_OBJECT(
-            'search_id' VALUE l_search_id,
-            'query' VALUE p_query_text,
-            'timestamp' VALUE TO_CHAR(SYSTIMESTAMP, 'YYYY-MM-DD"T"HH24:MI:SS.FF3"Z"'),
-            'recommendations' VALUE (
-                SELECT JSON_ARRAYAGG(
-                    JSON_OBJECT(
-                        'rank' VALUE ROWNUM,
-                        'catalog_item_id' VALUE CATALOG_ITEM_ID,
-                        'catalog_path' VALUE CATALOG_PATH,
-                        'relevance_score' VALUE AVG_RELEVANCE_SCORE,
-                        'frequency' VALUE FREQUENCY,
-                        'max_score' VALUE MAX_RELEVANCE_SCORE
+        -- Build final JSON response and capture count (no reparsing needed)
+        SELECT 
+            JSON_OBJECT(
+                'search_id' VALUE l_search_id,
+                'query' VALUE p_query_text,
+                'timestamp' VALUE TO_CHAR(SYSTIMESTAMP, 'YYYY-MM-DD"T"HH24:MI:SS.FF3"Z"'),
+                'recommendations' VALUE (
+                    SELECT JSON_ARRAYAGG(
+                        JSON_OBJECT(
+                            'rank' VALUE ROWNUM,
+                            'catalog_item_id' VALUE CATALOG_ITEM_ID,
+                            'catalog_path' VALUE CATALOG_PATH,
+                            'relevance_score' VALUE AVG_RELEVANCE_SCORE,
+                            'frequency' VALUE FREQUENCY,
+                            'max_score' VALUE MAX_RELEVANCE_SCORE
+                        )
+                        ORDER BY ROWNUM
                     )
-                    ORDER BY ROWNUM
+                    FROM catalog_aggregation
                 )
-                FROM catalog_aggregation
-            )
-        ) INTO p_result_json
-        FROM DUAL;
+            ),
+            COUNT(*)  -- Capture count during aggregation
+        INTO p_result_json, l_result_count
+        FROM catalog_aggregation;
+        
+        -- NEW: Explicit handling for zero results
+        IF l_result_count = 0 THEN
+            p_result_json := JSON_OBJECT(
+                'search_id' VALUE l_search_id,
+                'query' VALUE p_query_text,
+                'timestamp' VALUE TO_CHAR(SYSTIMESTAMP, 'YYYY-MM-DD"T"HH24:MI:SS.FF3"Z"'),
+                'recommendations' VALUE JSON_ARRAY(),
+                'message' VALUE 'No relevant results found. Try rephrasing your query or using different keywords.'
+            );
+        END IF;
+        
+        -- Log search for analytics (using captured count, not reparsing JSON)
+        INSERT INTO SEARCH_LOG (
+            SEARCH_ID,
+            QUERY_TEXT,
+            RESULT_COUNT,
+            SEARCH_TIMESTAMP,
+            RESPONSE_TIME_MS
+        ) VALUES (
+            l_search_id,
+            p_query_text,
+            l_result_count,
+            SYSTIMESTAMP,
+            EXTRACT(SECOND FROM (SYSTIMESTAMP - l_start_time)) * 1000
+        );
+        COMMIT;
         
     EXCEPTION
+        WHEN NO_DATA_FOUND THEN
+            -- Explicit handling for empty result set
+            p_result_json := JSON_OBJECT(
+                'search_id' VALUE l_search_id,
+                'query' VALUE p_query_text,
+                'timestamp' VALUE TO_CHAR(SYSTIMESTAMP, 'YYYY-MM-DD"T"HH24:MI:SS.FF3"Z"'),
+                'recommendations' VALUE JSON_ARRAY(),
+                'message' VALUE 'No relevant results found. The knowledge base may not contain similar service requests.'
+            );
         WHEN OTHERS THEN
             l_error_message := 'Error performing vector search: ' || SQLERRM;
             p_result_json := JSON_OBJECT(
@@ -320,7 +438,6 @@ BEGIN
     
 EXCEPTION
     WHEN OTHERS THEN
-        -- Catch-all exception handler
         p_result_json := JSON_OBJECT(
             'error' VALUE 'Unexpected error: ' || SQLERRM,
             'search_id' VALUE l_search_id
@@ -407,7 +524,7 @@ END;
 BEGIN
     -- Define the REST module
     ORDS.DEFINE_MODULE(
-        p_module_name    => 'siebel_search',
+        p_module_name    => 'siebel',
         p_base_path      => '/siebel/',
         p_items_per_page => 0,
         p_status         => 'PUBLISHED',
@@ -429,7 +546,7 @@ FROM user_ords_modules;
 BEGIN
     -- Define the URL template
     ORDS.DEFINE_TEMPLATE(
-        p_module_name => 'siebel_search',
+        p_module_name => 'siebel',
         p_pattern     => 'search',
         p_priority    => 0,
         p_etag_type   => 'HASH',
@@ -443,7 +560,7 @@ END;
 -- Verify template creation
 SELECT id, uri_template, priority
 FROM user_ords_templates
-WHERE module_id = (SELECT id FROM user_ords_modules WHERE name = 'siebel_search');
+WHERE module_id = (SELECT id FROM user_ords_modules WHERE name = 'siebel');
 ```
 
 #### 4.3. Create ORDS Handler
@@ -452,7 +569,7 @@ WHERE module_id = (SELECT id FROM user_ords_modules WHERE name = 'siebel_search'
 BEGIN
     -- Define the POST handler
     ORDS.DEFINE_HANDLER(
-        p_module_name    => 'siebel_search',
+        p_module_name    => 'siebel',
         p_pattern        => 'search',
         p_method         => 'POST',
         p_source_type    => ORDS.source_type_plsql,
@@ -470,7 +587,7 @@ SELECT id, method, source_type
 FROM user_ords_handlers
 WHERE template_id = (
     SELECT id FROM user_ords_templates 
-    WHERE module_id = (SELECT id FROM user_ords_modules WHERE name = 'siebel_search')
+    WHERE module_id = (SELECT id FROM user_ords_modules WHERE name = 'siebel')
 );
 ```
 
@@ -631,7 +748,9 @@ openssl rand -base64 32
 # Validate the key in your PL/SQL wrapper procedure
 ```
 
-Update the wrapper procedure to check for API key:
+Update the wrapper procedure to check for API key (secured version):
+
+**Important:** This improved version fetches the API key from secure configuration table instead of hardcoding it.
 
 ```sql
 CREATE OR REPLACE PROCEDURE HANDLE_SEARCH_REQUEST AS
@@ -639,8 +758,28 @@ CREATE OR REPLACE PROCEDURE HANDLE_SEARCH_REQUEST AS
     l_top_k         NUMBER;
     l_result_json   CLOB;
     l_api_key       VARCHAR2(100);
-    l_expected_key  VARCHAR2(100) := 'YOUR_SECURE_API_KEY_HERE'; -- Store securely!
+    l_expected_key  VARCHAR2(100);
 BEGIN
+    -- Fetch API key from secure configuration (NOT hardcoded!)
+    BEGIN
+        l_expected_key := GET_SECURE_CONFIG('ORDS_API_KEY');
+        
+        IF l_expected_key IS NULL THEN
+            OWA_UTIL.STATUS_LINE(500, 'Internal Server Error');
+            OWA_UTIL.MIME_HEADER('application/json', FALSE);
+            OWA_UTIL.HTTP_HEADER_CLOSE;
+            HTP.PRN(JSON_OBJECT('error' VALUE 'API key configuration error'));
+            RETURN;
+        END IF;
+    EXCEPTION
+        WHEN OTHERS THEN
+            OWA_UTIL.STATUS_LINE(500, 'Internal Server Error');
+            OWA_UTIL.MIME_HEADER('application/json', FALSE);
+            OWA_UTIL.HTTP_HEADER_CLOSE;
+            HTP.PRN(JSON_OBJECT('error' VALUE 'Configuration error'));
+            RETURN;
+    END;
+    
     -- Get API key from header
     l_api_key := OWA_UTIL.GET_CGI_ENV('HTTP_X_API_KEY');
     

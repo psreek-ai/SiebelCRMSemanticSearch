@@ -195,7 +195,13 @@ Create the following **Output Arguments**:
 /*****************************************************************************
  * Business Service: SemanticSearchAPIService
  * Method: InvokeSearch
- * Purpose: Calls ORDS semantic search API and returns ranked catalog items
+ * Purpose: Calls ORDS semantic search API with input sanitization and retry logic
+ * 
+ * IMPROVEMENTS:
+ * - Input sanitization to prevent injection attacks
+ * - Configurable retry logic for transient network errors (503, 504, 408)
+ * - Exponential backoff between retries
+ * - MaxRetries parameter in Named Subsystem
  *****************************************************************************/
 
 function Service_PreInvokeMethod(MethodName, Inputs, Outputs)
@@ -205,6 +211,35 @@ function Service_PreInvokeMethod(MethodName, Inputs, Outputs)
         return (CancelOperation);
     }
     return (ContinueOperation);
+}
+
+// NEW: Input sanitization function
+function SanitizeQueryText(queryText)
+{
+    if (!queryText || queryText === "")
+    {
+        return "";
+    }
+    
+    var sanitized = queryText;
+    
+    // Remove control characters
+    sanitized = sanitized.replace(/[\x00-\x1F\x7F]/g, '');
+    
+    // Trim excessive whitespace
+    sanitized = sanitized.replace(/\s+/g, ' ').trim();
+    
+    // Limit length to prevent payload attacks
+    if (sanitized.length > 5000)
+    {
+        sanitized = sanitized.substring(0, 5000);
+    }
+    
+    // Remove potential script injection
+    sanitized = sanitized.replace(/<script[^>]*>.*?<\/script>/gi, '');
+    sanitized = sanitized.replace(/<[^>]+>/g, '');
+    
+    return sanitized;
 }
 
 function InvokeSearch(Inputs, Outputs)
@@ -218,7 +253,16 @@ function InvokeSearch(Inputs, Outputs)
         if (!queryText || queryText.trim() === "")
         {
             Outputs.SetProperty("Error", "Query text cannot be empty");
-            return;
+            return (CancelOperation);
+        }
+        
+        // NEW: Sanitize input
+        queryText = SanitizeQueryText(queryText);
+        
+        if (!queryText || queryText === "")
+        {
+            Outputs.SetProperty("Error", "Invalid query text after sanitization");
+            return (CancelOperation);
         }
         
         // Default TopK if not provided
@@ -227,16 +271,24 @@ function InvokeSearch(Inputs, Outputs)
             topK = "5";
         }
         
+        // Validate TopK is numeric
+        var topKNum = parseInt(topK);
+        if (isNaN(topKNum) || topKNum < 1 || topKNum > 20)
+        {
+            topK = "5";
+        }
+        
         // Get API configuration from Named Subsystem
         var apiUrl = TheApplication().GetProfileAttr("SemanticSearchORDS.URL");
         var apiKey = TheApplication().GetProfileAttr("SemanticSearchORDS.APIKey");
         var timeout = TheApplication().GetProfileAttr("SemanticSearchORDS.Timeout");
+        var maxRetries = TheApplication().GetProfileAttr("SemanticSearchORDS.MaxRetries");  // NEW
         
         if (!apiUrl)
         {
             Outputs.SetProperty("Error", "API URL not configured in Named Subsystem");
             TheApplication().Trace("ERROR: SemanticSearchORDS.URL parameter not found");
-            return;
+            return (CancelOperation);
         }
         
         // Default timeout if not configured
@@ -245,64 +297,136 @@ function InvokeSearch(Inputs, Outputs)
             timeout = "5000";
         }
         
+        // NEW: Default max retries
+        if (!maxRetries || maxRetries === "")
+        {
+            maxRetries = "2";
+        }
+        var maxRetriesNum = parseInt(maxRetries);
+        
         TheApplication().Trace("Calling Semantic Search API: " + apiUrl);
-        TheApplication().Trace("Query: " + queryText);
+        TheApplication().Trace("Query (sanitized): " + queryText);
         TheApplication().Trace("TopK: " + topK);
+        TheApplication().Trace("Max Retries: " + maxRetriesNum);
         
-        // Prepare HTTP request
-        var httpSvc = TheApplication().GetService("EAI HTTP Transport");
-        var httpInputs = TheApplication().NewPropertySet();
-        var httpOutputs = TheApplication().NewPropertySet();
+        // NEW: Retry loop for transient errors
+        var retryCount = 0;
+        var lastError = "";
+        var httpStatus = "";
+        var responseBody = "";
         
-        // Set HTTP request parameters
-        httpInputs.SetProperty("HTTPRequestMethod", "POST");
-        httpInputs.SetProperty("HTTPRequestURLEncoding", "UTF-8");
-        httpInputs.SetProperty("HTTPRequestURL", apiUrl);
-        httpInputs.SetProperty("HTTPContentType", "text/plain; charset=UTF-8");
-        httpInputs.SetProperty("HTTPRequestBody", queryText);
-        httpInputs.SetProperty("HTTPHeader.Top-K", topK);
-        httpInputs.SetProperty("HTTPTimeout", timeout);
-        
-        // Add API key header if configured
-        if (apiKey && apiKey !== "")
+        while (retryCount <= maxRetriesNum)
         {
-            httpInputs.SetProperty("HTTPHeader.X-API-Key", apiKey);
+            try
+            {
         }
         
-        // Add additional headers
-        httpInputs.SetProperty("HTTPHeader.Accept", "application/json");
-        httpInputs.SetProperty("HTTPHeader.User-Agent", "SiebelCRM/23.0");
+        TheApplication().Trace("Calling Semantic Search API: " + apiUrl);
+        TheApplication().Trace("Query (sanitized): " + queryText);
+        TheApplication().Trace("TopK: " + topK);
+        TheApplication().Trace("Max Retries: " + maxRetriesNum);
         
-        // Invoke HTTP transport service
-        httpSvc.InvokeMethod("SendReceive", httpInputs, httpOutputs);
+        // NEW: Retry loop for transient errors
+        var retryCount = 0;
+        var lastError = "";
+        var httpStatus = "";
+        var responseBody = "";
         
-        // Get response
-        var httpStatus = httpOutputs.GetProperty("HTTPResponseStatus");
-        var responseBody = httpOutputs.GetProperty("HTTPResponseBody");
+        while (retryCount <= maxRetriesNum)
+        {
+            try
+            {
+                // Prepare HTTP request
+                var httpSvc = TheApplication().GetService("EAI HTTP Transport");
+                var httpInputs = TheApplication().NewPropertySet();
+                var httpOutputs = TheApplication().NewPropertySet();
+                
+                // Set HTTP request parameters
+                httpInputs.SetProperty("HTTPRequestMethod", "POST");
+                httpInputs.SetProperty("HTTPRequestURLEncoding", "UTF-8");
+                httpInputs.SetProperty("HTTPRequestURL", apiUrl);
+                httpInputs.SetProperty("HTTPContentType", "text/plain; charset=UTF-8");
+                httpInputs.SetProperty("HTTPRequestBody", queryText);
+                httpInputs.SetProperty("HTTPHeader.Top-K", topK);
+                httpInputs.SetProperty("HTTPTimeout", timeout);
+                
+                // Add API key header if configured
+                if (apiKey && apiKey !== "")
+                {
+                    httpInputs.SetProperty("HTTPHeader.X-API-Key", apiKey);
+                }
+                
+                // Add additional headers
+                httpInputs.SetProperty("HTTPHeader.Accept", "application/json");
+                httpInputs.SetProperty("HTTPHeader.User-Agent", "SiebelCRM/23.0");
+                
+                // Invoke HTTP transport service
+                httpSvc.InvokeMethod("SendReceive", httpInputs, httpOutputs);
+                
+                // Get response
+                httpStatus = httpOutputs.GetProperty("HTTPResponseStatus");
+                responseBody = httpOutputs.GetProperty("HTTPResponseBody");
+                
+                TheApplication().Trace("HTTP Status: " + httpStatus);
+                
+                // Check for HTTP errors
+                if (!httpStatus || httpStatus === "")
+                {
+                    throw new Error("No response from API server");
+                }
+                
+                // Parse status code
+                var statusCode = parseInt(httpStatus.split(" ")[0]);
+                
+                // NEW: Check if error is retryable
+                if (statusCode === 503 || statusCode === 504 || statusCode === 408)
+                {
+                    lastError = "Transient error: " + httpStatus;
+                    TheApplication().Trace("Transient error, retry " + (retryCount + 1) + "/" + maxRetriesNum);
+                    
+                    if (retryCount < maxRetriesNum)
+                    {
+                        retryCount++;
+                        // Exponential backoff
+                        var waitTime = Math.pow(2, retryCount - 1);
+                        TheApplication().Trace("Waiting " + waitTime + " second(s) before retry");
+                        
+                        // Simple wait using loop
+                        var start = new Date().getTime();
+                        while (new Date().getTime() < start + (waitTime * 1000)) { /* wait */ }
+                        
+                        continue; // Retry
+                    }
+                    else
+                    {
+                        throw new Error("Service unavailable after " + maxRetriesNum + " retries");
+                    }
+                }
+                else if (statusCode !== 200)
+                {
+                    throw new Error("API returned error status: " + httpStatus);
+                }
+                
+                // Success - break out of retry loop
+                break;
+            }
+            catch (e)
+            {
+                lastError = e.toString();
+                TheApplication().Trace("Error in retry attempt " + (retryCount + 1) + ": " + lastError);
+                
+                // If this was the last retry, throw the error
+                if (retryCount >= maxRetriesNum)
+                {
+                    throw e;
+                }
+                
+                retryCount++;
+            }
+        }
         
-        TheApplication().Trace("HTTP Status: " + httpStatus);
+        // Parse JSON response (after successful retry loop)
         TheApplication().Trace("Response Body: " + responseBody);
-        
-        // Check for HTTP errors
-        if (!httpStatus || httpStatus === "")
-        {
-            Outputs.SetProperty("Error", "No response from API server");
-            TheApplication().Trace("ERROR: No HTTP status received");
-            return;
-        }
-        
-        // Parse status code
-        var statusCode = parseInt(httpStatus.split(" ")[0]);
-        
-        if (statusCode !== 200)
-        {
-            var errorMsg = "API returned error status: " + httpStatus;
-            Outputs.SetProperty("Error", errorMsg);
-            TheApplication().Trace("ERROR: " + errorMsg);
-            return;
-        }
-        
-        // Parse JSON response
         if (!responseBody || responseBody === "")
         {
             Outputs.SetProperty("Error", "Empty response from API");
