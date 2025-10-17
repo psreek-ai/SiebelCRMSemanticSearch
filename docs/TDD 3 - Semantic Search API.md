@@ -1,4 +1,4 @@
-# Technical Design Document 3: Semantic Search API 
+# Technical Design Document 3: Semantic Search API
 
 **Version:** 2.1
 **Date:** 2025-10-16
@@ -13,8 +13,6 @@ This document specifies the design of the RESTful API that will provide the sema
 * **Language:** PL/SQL, SQL with JSON extensions
 
 ## 3. API Endpoint Definition
-
-The public contract of the API remains the same to ensure client decoupling.
 
 ### 3.1. Search Endpoint
 * **URL:** `https://<db_host>/ords/semantic_search/siebel/search`
@@ -44,14 +42,12 @@ The request body will be plain text containing the user's query. A header will s
     }
   ]
 }
-````
+```
 
-## 4\. Core Logic: PL/SQL Implementation
-
-All API logic will be encapsulated in a single PL/SQL stored procedure within the `SEMANTIC_SEARCH` schema.
+## 4. Core Logic: PL/SQL Implementation
+All API logic will be encapsulated in a single PL/SQL package within the `SEMANTIC_SEARCH` schema for better organization and maintenance.
 
 ### 4.1. Prerequisites for OCI Callouts
-
 1.  **Network ACL:** The database administrator must configure a Network Access Control List (ACL) to allow the `SEMANTIC_SEARCH` schema to make outbound HTTPS requests to the OCI Generative AI endpoint.
 2.  **OCI Credentials:** An OCI credential object must be created in the database to securely handle authentication with the OCI APIs.
     ```sql
@@ -68,7 +64,6 @@ All API logic will be encapsulated in a single PL/SQL stored procedure within th
     ```
 
 ### 4.2. Stored Procedure: `GET_SEMANTIC_RECOMMENDATIONS`
-
 This procedure will contain the end-to-end search logic.
 
 ```sql
@@ -80,16 +75,24 @@ CREATE OR REPLACE PROCEDURE SEMANTIC_SEARCH.GET_SEMANTIC_RECOMMENDATIONS (
     l_json_response     CLOB;
     l_oci_response      CLOB;
     l_oci_req_body      CLOB;
-    l_embedding_url     VARCHAR2(512) := '[https://inference.generativeai](https://inference.generativeai).<region>[.oci.oraclecloud.com/20231130/actions/embedText](https://.oci.oraclecloud.com/20231130/actions/embedText)';
+    l_embedding_url     VARCHAR2(512) := 'https://inference.generativeai.<region>.oci.oraclecloud.com/20231130/actions/embedText';
+    l_search_id         VARCHAR2(64) := SYS_GUID();
 BEGIN
     -- Step 1: Generate vector for the user query by calling OCI GenAI service
-    l_oci_req_body := '{"servingMode": {"servingType": "ON_DEMAND"}, "compartmentId": "<your_compartment_ocid>", "inputs": [{"text": "' || p_query || '"}], "modelId": "cohere.embed-english-v3.0"}';
+    l_oci_req_body := JSON_OBJECT(
+        'servingMode'   KEY 'servingType' VALUE 'ON_DEMAND',
+        'compartmentId' KEY 'value' VALUE '<your_compartment_ocid>',
+        'modelId'       KEY 'value' VALUE 'cohere.embed-english-v3.0',
+        'inputs'        KEY 'value' VALUE JSON_ARRAY(
+            JSON_OBJECT('text' KEY 'value' VALUE p_query)
+        )
+    );
     
     l_oci_response := DBMS_CLOUD.SEND_REQUEST(
         credential_name => 'OCI_GENAI_CREDENTIAL',
         uri             => l_embedding_url,
         method          => 'POST',
-        body            => l_oci_req_body
+        body            => UTL_RAW.CAST_TO_RAW(l_oci_req_body)
     );
     
     -- Extract the vector from the JSON response
@@ -98,107 +101,85 @@ BEGIN
 
     -- Step 2: Perform vector search, rank results, and construct the final JSON response
     SELECT JSON_OBJECT (
-        'search_id' KEY SYS_GUID(),
+        'search_id' KEY l_search_id,
         'recommendations' KEY (
-            SELECT JSON_ARRAYAGG (
-                JSON_OBJECT (
-                    'rank'            KEY rnk,
-                    'catalog_item_id' KEY catalog_item_id,
-                    'catalog_path'    KEY catalog_path,
-                    'relevance_score' KEY relevance_score
-                ) ORDER BY rnk
+            SELECT JSON_ARRAYAGG(
+                JSON_OBJECT(
+                    'rank' KEY r.rnk,
+                    'catalog_item_id' KEY r.CATALOG_ITEM_ID,
+                    'catalog_path' KEY r.CATALOG_PATH,
+                    'relevance_score' KEY r.relevance_score
+                )
+                ORDER BY r.rnk
             )
             FROM (
-                -- Subquery to perform ranking (frequency count in this example)
                 SELECT
-                    catalog_item_id,
-                    catalog_path,
-                    -- Simple relevance score based on frequency in top results
-                    COUNT(*) / 50 AS relevance_score, 
-                    ROW_NUMBER() OVER (ORDER BY COUNT(*) DESC) as rnk
-                FROM (
-                    -- Core vector search query
-                    SELECT
-                        v.CATALOG_ITEM_ID,
-                        v.CATALOG_PATH
-                    FROM SEMANTIC_SEARCH.SIEBEL_KNOWLEDGE_VECTORS v
-                    ORDER BY VECTOR_DISTANCE(v.NARRATIVE_VECTOR, l_query_vector, COSINE)
-                    FETCH FIRST 50 ROWS ONLY
-                )
-                GROUP BY catalog_item_id, catalog_path
-                ORDER BY COUNT(*) DESC
+                    v.CATALOG_ITEM_ID,
+                    v.CATALOG_PATH,
+                    VECTOR_DISTANCE(v.NARRATIVE_VECTOR, l_query_vector, COSINE) as relevance_score,
+                    DENSE_RANK() OVER (ORDER BY VECTOR_DISTANCE(v.NARRATIVE_VECTOR, l_query_vector, COSINE) DESC) as rnk
+                FROM
+                    SIEBEL_KNOWLEDGE_VECTORS v
+                ORDER BY
+                    relevance_score DESC
                 FETCH FIRST p_top_k ROWS ONLY
-            )
+            ) r
         )
     ) INTO l_json_response
     FROM DUAL;
 
-    -- Step 3: Set HTTP headers and print the JSON response
+    -- Step 3: Set HTTP headers and print the response
     ORDS.SET_HEADER('Content-Type', 'application/json');
     HTP.P(l_json_response);
 
 EXCEPTION
     WHEN OTHERS THEN
-        ORDS.SET_HTTP_STATUS_CODE(500);
-        HTP.P('{"error": "An internal error occurred during search.", "details": "' || SQLERRM || '"}');
-END;
+        ORDS.SET_STATUS(500); -- Internal Server Error
+        HTP.P('{"error": "' || SQLERRM || '"}');
+END GET_SEMANTIC_RECOMMENDATIONS;
 /
 ```
 
-## 5\. ORDS Endpoint Configuration
-
-The following PL/SQL block will be executed once to publish the stored procedure as a REST endpoint.
+### 4.3. ORDS Configuration
+The following block registers the PL/SQL procedure as a REST endpoint.
 
 ```sql
 BEGIN
-    -- Enable ORDS for the SEMANTIC_SEARCH schema
-    ORDS.ENABLE_SCHEMA(
-        p_enabled => TRUE,
-        p_schema  => 'SEMANTIC_SEARCH'
-    );
+    ORDS.ENABLE_SCHEMA(p_enabled => TRUE, p_schema => 'SEMANTIC_SEARCH');
 
-    -- Define a module as a container for our APIs
     ORDS.DEFINE_MODULE(
-        p_module_name => 'siebel.api',
-        p_base_path   => '/siebel/'
+        p_module_name    => 'siebel',
+        p_base_path      => '/siebel/',
+        p_items_per_page => 0
     );
 
-    -- Define the specific endpoint template
     ORDS.DEFINE_TEMPLATE(
-        p_module_name => 'siebel.api',
+        p_module_name => 'siebel',
         p_pattern     => 'search'
     );
 
-    -- Define the handler for the POST method
     ORDS.DEFINE_HANDLER(
-        p_module_name => 'siebel.api',
-        p_pattern     => 'search',
-        p_method      => 'POST',
-        p_source_type => ORDS.source_type_plsql,
-        -- This block maps the HTTP request to the PL/SQL procedure
-        p_source      => 'BEGIN SEMANTIC_SEARCH.GET_SEMANTIC_RECOMMENDATIONS(p_query => :body_text, p_top_k => :top_k); END;',
+        p_module_name    => 'siebel',
+        p_pattern        => 'search',
+        p_method         => 'POST',
+        p_source_type    => ORDS.source_type_plsql,
+        p_source         => 'BEGIN SEMANTIC_SEARCH.GET_SEMANTIC_RECOMMENDATIONS(p_query => :body_text, p_top_k => :top_k); END;',
         p_items_per_page => 0
     );
     
-    -- Define the :top_k header parameter
+    -- Define the parameter for the Top-K header
     ORDS.DEFINE_PARAMETER(
-        p_handler_name  => 'siebel.api',
-        p_pattern       => 'search',
-        p_method        => 'POST',
-        p_name          => 'top_k',
+        p_module_name        => 'siebel',
+        p_pattern            => 'search',
+        p_method             => 'POST',
+        p_name               => 'top_k',
         p_bind_variable_name => 'top_k',
-        p_source_type   => 'HEADER',
-        p_param_type    => 'INT',
-        p_access_method => 'IN'
+        p_source_type        => 'HEADER',
+        p_param_type         => 'INT',
+        p_access_method      => 'IN'
     );
 
     COMMIT;
 END;
 /
 ```
-
-## 6\. Security
-
-  * **Authentication:** The ORDS endpoint can be protected using ORDS roles and privileges, or more robustly with an OAuth2 client credentials flow. For initial integration, it can be protected via an API Gateway which requires an API Key.
-  * **Network Security:** The ORDS listener should be placed in a private subnet, with access controlled by an OCI Load Balancer or API Gateway.
-  * **Credential Management:** Database credentials are no longer needed externally. The OCI credential for the GenAI service is stored securely within the database itself. This significantly improves the security posture.
