@@ -228,16 +228,41 @@ LOG_LEVEL=INFO
 streamlit run app.py --server.port 8501
 ```
 
-**Docker Deployment**:
+**Azure Container Apps Deployment (Recommended)**:
 ```bash
+# Build and push container
 docker build -t semantic-search-test-app .
-docker run -p 8501:8501 --env-file .env semantic-search-test-app
+az acr login --name <your-registry>
+docker tag semantic-search-test-app <your-registry>.azurecr.io/semantic-search-test-app:latest
+docker push <your-registry>.azurecr.io/semantic-search-test-app:latest
+
+# Deploy to Azure Container Apps
+az containerapp create \
+  --name semantic-search-test \
+  --resource-group <your-rg> \
+  --environment <your-env> \
+  --image <your-registry>.azurecr.io/semantic-search-test-app:latest \
+  --target-port 8501 \
+  --ingress external \
+  --env-vars-file .env
 ```
 
-**Cloud Deployment**:
-- Deploy to Streamlit Cloud with one-click deployment
-- Configure secrets via Streamlit Cloud interface
-- Accessible via public URL for remote testing
+**Azure App Service Deployment (Alternative)**:
+```bash
+# Deploy using Azure CLI
+az webapp up \
+  --name semantic-search-test-app \
+  --resource-group <your-rg> \
+  --runtime PYTHON:3.11 \
+  --sku B1
+```
+
+**Benefits of Azure Deployment**:
+- Stays within Azure infrastructure alongside Autonomous Database
+- Private VNet integration available for secure connectivity
+- Azure AD authentication for access control
+- Integrated with Azure Monitor for logging and diagnostics
+- Cost-effective with Azure reserved capacity
 
 ### 6.8. Documentation
 

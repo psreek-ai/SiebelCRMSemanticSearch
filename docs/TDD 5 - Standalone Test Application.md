@@ -1254,14 +1254,14 @@ def setup_logger(name: str, level: str = "INFO") -> logging.Logger:
 
 ## 15. Deployment
 
-### 15.1. Standalone Deployment
+### 15.1. Local Development Deployment
 
 Run locally for testing:
 ```bash
 streamlit run app.py --server.port 8501
 ```
 
-### 15.2. Docker Deployment
+### 15.2. Docker Container Build
 
 Create `Dockerfile`:
 ```dockerfile
@@ -1269,29 +1269,318 @@ FROM python:3.11-slim
 
 WORKDIR /app
 
+# Install system dependencies
+RUN apt-get update && apt-get install -y \
+    curl \
+    && rm -rf /var/lib/apt/lists/*
+
+# Copy requirements and install Python dependencies
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
+# Copy application code
 COPY . .
 
+# Expose Streamlit port
 EXPOSE 8501
 
-CMD ["streamlit", "run", "app.py", "--server.port=8501", "--server.address=0.0.0.0"]
+# Health check
+HEALTHCHECK --interval=30s --timeout=10s --start-period=5s --retries=3 \
+  CMD curl --fail http://localhost:8501/_stcore/health || exit 1
+
+# Run Streamlit
+CMD ["streamlit", "run", "app.py", "--server.port=8501", "--server.address=0.0.0.0", "--server.headless=true"]
 ```
 
-Build and run:
+Build container:
 ```bash
-docker build -t semantic-search-test-app .
-docker run -p 8501:8501 --env-file .env semantic-search-test-app
+docker build -t semantic-search-test-app:latest .
+docker run -p 8501:8501 --env-file .env semantic-search-test-app:latest
 ```
 
-### 15.3. Cloud Deployment
+### 15.3. Azure Container Apps Deployment (Recommended)
 
-Deploy to Streamlit Cloud:
-1. Push code to GitHub repository
-2. Connect repository to Streamlit Cloud
-3. Configure secrets (API_KEY, DB_PASSWORD, etc.)
-4. Deploy with one click
+**Why Azure Container Apps?**
+- Serverless container hosting within Azure
+- Automatic scaling based on traffic
+- Private VNet integration for secure connectivity to Autonomous Database
+- Built-in load balancing and SSL termination
+- Integrated with Azure Monitor and Application Insights
+- Cost-effective pay-per-use model
+
+**Prerequisites:**
+```bash
+# Install Azure CLI (if not already installed)
+# https://docs.microsoft.com/en-us/cli/azure/install-azure-cli
+
+# Login to Azure
+az login
+
+# Set subscription
+az account set --subscription "<your-subscription-id>"
+```
+
+**Step 1: Create Azure Container Registry (ACR)**
+```bash
+# Create resource group (if not exists)
+az group create \
+  --name semantic-search-rg \
+  --location eastus
+
+# Create Azure Container Registry
+az acr create \
+  --resource-group semantic-search-rg \
+  --name semanticsearchacr \
+  --sku Basic
+```
+
+**Step 2: Build and Push Container to ACR**
+```bash
+# Login to ACR
+az acr login --name semanticsearchacr
+
+# Build and push using ACR
+az acr build \
+  --registry semanticsearchacr \
+  --image semantic-search-test-app:v1.0 \
+  --file Dockerfile .
+
+# Or tag and push local build
+docker tag semantic-search-test-app:latest semanticsearchacr.azurecr.io/semantic-search-test-app:v1.0
+docker push semanticsearchacr.azurecr.io/semantic-search-test-app:v1.0
+```
+
+**Step 3: Create Container Apps Environment**
+```bash
+# Install Container Apps extension
+az extension add --name containerapp --upgrade
+
+# Create Container Apps environment
+az containerapp env create \
+  --name semantic-search-env \
+  --resource-group semantic-search-rg \
+  --location eastus
+```
+
+**Step 4: Deploy Container App**
+```bash
+# Deploy the application
+az containerapp create \
+  --name semantic-search-test \
+  --resource-group semantic-search-rg \
+  --environment semantic-search-env \
+  --image semanticsearchacr.azurecr.io/semantic-search-test-app:v1.0 \
+  --registry-server semanticsearchacr.azurecr.io \
+  --target-port 8501 \
+  --ingress external \
+  --min-replicas 1 \
+  --max-replicas 3 \
+  --cpu 0.5 \
+  --memory 1.0Gi \
+  --env-vars \
+    ORDS_BASE_URL="https://<unique_id>-<db_name>.adb.<region>.oraclecloudapps.com/ords" \
+    ORDS_SCHEMA="semantic_search" \
+    ORDS_MODULE="siebel" \
+    API_KEY="secretref:api-key" \
+    DEFAULT_TOP_K="5" \
+    CACHE_ENABLED="true" \
+    LOG_LEVEL="INFO"
+
+# Note: Secrets should be stored in Azure Key Vault and referenced
+```
+
+**Step 5: Configure Secrets (Secure)**
+```bash
+# Create secrets in Container App
+az containerapp secret set \
+  --name semantic-search-test \
+  --resource-group semantic-search-rg \
+  --secrets \
+    api-key="<your-secure-api-key>" \
+    db-password="<your-db-password>"
+```
+
+**Step 6: Enable VNet Integration (Optional - for private connectivity)**
+```bash
+# Create VNet
+az network vnet create \
+  --resource-group semantic-search-rg \
+  --name semantic-search-vnet \
+  --address-prefix 10.0.0.0/16 \
+  --subnet-name app-subnet \
+  --subnet-prefix 10.0.1.0/24
+
+# Update Container Apps environment with VNet
+az containerapp env update \
+  --name semantic-search-env \
+  --resource-group semantic-search-rg \
+  --infrastructure-subnet-resource-id "/subscriptions/<sub-id>/resourceGroups/semantic-search-rg/providers/Microsoft.Network/virtualNetworks/semantic-search-vnet/subnets/app-subnet"
+```
+
+**Step 7: Get Application URL**
+```bash
+# Get the application FQDN
+az containerapp show \
+  --name semantic-search-test \
+  --resource-group semantic-search-rg \
+  --query properties.configuration.ingress.fqdn \
+  --output tsv
+
+# Output: semantic-search-test.xxx.azurecontainerapps.io
+```
+
+### 15.4. Azure App Service Deployment (Alternative)
+
+**For simpler deployments without containerization:**
+
+```bash
+# Create App Service Plan
+az appservice plan create \
+  --name semantic-search-plan \
+  --resource-group semantic-search-rg \
+  --sku B1 \
+  --is-linux
+
+# Create Web App
+az webapp create \
+  --name semantic-search-test-app \
+  --resource-group semantic-search-rg \
+  --plan semantic-search-plan \
+  --runtime "PYTHON:3.11"
+
+# Configure environment variables
+az webapp config appsettings set \
+  --name semantic-search-test-app \
+  --resource-group semantic-search-rg \
+  --settings \
+    ORDS_BASE_URL="https://<unique_id>-<db_name>.adb.<region>.oraclecloudapps.com/ords" \
+    API_KEY="<your-api-key>" \
+    DEFAULT_TOP_K="5"
+
+# Deploy code (from local directory or GitHub)
+az webapp up \
+  --name semantic-search-test-app \
+  --resource-group semantic-search-rg \
+  --runtime PYTHON:3.11
+
+# Create startup command file
+echo "python -m streamlit run app.py --server.port=8000 --server.address=0.0.0.0" > startup.txt
+
+# Configure startup command
+az webapp config set \
+  --name semantic-search-test-app \
+  --resource-group semantic-search-rg \
+  --startup-file "python -m streamlit run app.py --server.port=8000 --server.address=0.0.0.0"
+```
+
+### 15.5. Azure Deployment Comparison
+
+| Feature | Azure Container Apps | Azure App Service |
+|---------|---------------------|-------------------|
+| **Best For** | Microservices, containers | Simple web apps |
+| **Scaling** | Event-driven, scale to zero | Manual/auto-scale (min 1) |
+| **Pricing** | Pay per use | Always running (fixed cost) |
+| **VNet Integration** | Native support | Available (higher tiers) |
+| **Container Support** | Native | Docker support available |
+| **Management** | Serverless | Managed PaaS |
+| **Recommendation** | ✅ Recommended for this app | Alternative option |
+
+### 15.6. Post-Deployment Configuration
+
+**Configure Application Insights (Monitoring):**
+```bash
+# Create Application Insights
+az monitor app-insights component create \
+  --app semantic-search-insights \
+  --location eastus \
+  --resource-group semantic-search-rg
+
+# Get instrumentation key
+INSTRUMENTATION_KEY=$(az monitor app-insights component show \
+  --app semantic-search-insights \
+  --resource-group semantic-search-rg \
+  --query instrumentationKey \
+  --output tsv)
+
+# Update container app with monitoring
+az containerapp update \
+  --name semantic-search-test \
+  --resource-group semantic-search-rg \
+  --set-env-vars APPLICATIONINSIGHTS_CONNECTION_STRING="InstrumentationKey=$INSTRUMENTATION_KEY"
+```
+
+**Configure Custom Domain (Optional):**
+```bash
+# Add custom domain
+az containerapp hostname add \
+  --name semantic-search-test \
+  --resource-group semantic-search-rg \
+  --hostname "search-test.yourdomain.com"
+
+# Bind SSL certificate
+az containerapp hostname bind \
+  --name semantic-search-test \
+  --resource-group semantic-search-rg \
+  --hostname "search-test.yourdomain.com" \
+  --certificate <cert-id>
+```
+
+### 15.7. CI/CD Pipeline with GitHub Actions
+
+Create `.github/workflows/azure-deploy.yml`:
+
+```yaml
+name: Deploy to Azure Container Apps
+
+on:
+  push:
+    branches: [ main ]
+  workflow_dispatch:
+
+env:
+  AZURE_CONTAINER_REGISTRY: semanticsearchacr
+  CONTAINER_APP_NAME: semantic-search-test
+  RESOURCE_GROUP: semantic-search-rg
+
+jobs:
+  build-and-deploy:
+    runs-on: ubuntu-latest
+    
+    steps:
+    - uses: actions/checkout@v3
+    
+    - name: Azure Login
+      uses: azure/login@v1
+      with:
+        creds: ${{ secrets.AZURE_CREDENTIALS }}
+    
+    - name: Build and push to ACR
+      run: |
+        az acr build \
+          --registry ${{ env.AZURE_CONTAINER_REGISTRY }} \
+          --image semantic-search-test-app:${{ github.sha }} \
+          --file Dockerfile .
+    
+    - name: Deploy to Container Apps
+      run: |
+        az containerapp update \
+          --name ${{ env.CONTAINER_APP_NAME }} \
+          --resource-group ${{ env.RESOURCE_GROUP }} \
+          --image ${{ env.AZURE_CONTAINER_REGISTRY }}.azurecr.io/semantic-search-test-app:${{ github.sha }}
+```
+
+### 15.8. Cost Optimization
+
+**Azure Container Apps Pricing:**
+- Free tier: First 2M requests free
+- Compute: ~$0.000012 per vCPU-second
+- Memory: ~$0.000002 per GiB-second
+- Scale to zero when not in use
+
+**Estimated Monthly Costs:**
+- Light usage (< 100 requests/day): ~$5-10/month
+- Moderate usage (1000 requests/day): ~$20-30/month
+- Heavy usage (10,000 requests/day): ~$50-100/month
 
 ## 16. Future Enhancements
 
