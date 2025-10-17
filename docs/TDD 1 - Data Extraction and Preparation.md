@@ -11,9 +11,9 @@ This document provides the technical specification for extracting and preparing 
 
 ### 2.1. Data Flow
 ```
-Oracle 19c (Siebel DB on Azure VM)  →  Azure Private Network  →  Oracle 23ai (Vector DB on Azure VM)
-      ↓                                   (VNet connectivity)              ↓
-   Source Data                                                      Database Link
+Oracle 19c (Siebel database)  →  Azure Private Network  →  Oracle Database 23ai on Azure VM
+      ↓                            (VNet connectivity)              ↓
+   Source Data                                               Database Link
                                                                           ↓
                                               Copy relevant tables (S_SRV_REQ, S_ORDER, S_EVT_ACT, S_PROD_INT)
                                                                           ↓
@@ -180,7 +180,7 @@ CREATE DATABASE LINK SIEBEL_19C_LINK
 **Executor:** Database Administrator on Oracle 23ai VM  
 **Duration:** 10 minutes
 
-#### 2.1. Connect to Oracle 23ai Database
+#### 2.1. Connect to Oracle 23ai
 
 ```bash
 # SSH to Oracle 23ai VM
@@ -320,9 +320,9 @@ END;
 
 ---
 
-### Step 3: Copy Data from Oracle 19c to Oracle Oracle 23ai Database
+### Step 3: Copy Data from Oracle 19c to Oracle 23ai
 
-**Executor:** Database Administrator on Oracle Oracle 23ai Database  
+**Executor:** Database Administrator on Oracle 23ai  
 **Duration:** 30-60 minutes (depending on data volume)
 
 #### 3.1. Initial Full Load
@@ -428,7 +428,7 @@ SELECT 'STG_S_PROD_INT', COUNT(*) FROM STG_S_PROD_INT;
 
 ### Step 4: Create Data Aggregation View
 
-**Executor:** Database Administrator on Oracle Oracle 23ai Database  
+**Executor:** Database Administrator on Oracle 23ai  
 **Duration:** 30 minutes
 
 #### 4.1. Create Catalog Hierarchy View
@@ -540,7 +540,7 @@ WHERE ROWNUM <= 5;
 
 ### Step 5: Create Staging Table for Vector Generation
 
-**Executor:** Database Administrator on Oracle Oracle 23ai Database  
+**Executor:** Database Administrator on Oracle 23ai  
 **Duration:** 20-40 minutes (depending on data volume)
 
 #### 5.1. Create the Narrative Staging Table
@@ -608,7 +608,7 @@ WHERE ROWNUM <= 10;
 
 ### Step 6: Set Up Incremental Refresh Process
 
-**Executor:** Database Administrator on Oracle Oracle 23ai Database  
+**Executor:** Database Administrator on Oracle 23ai  
 **Duration:** 15 minutes
 
 #### 6.1. Create Incremental Refresh Procedure

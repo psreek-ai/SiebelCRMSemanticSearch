@@ -31,7 +31,7 @@ Before beginning testing, ensure:
 ### 2.3. Test Data Preparation
 
 ```sql
--- Connect to Oracle Oracle 23ai Database as SEMANTIC_SEARCH
+-- Connect to Oracle 23ai as SEMANTIC_SEARCH
 sqlplus SEMANTIC_SEARCH/<password>@<service_name>
 
 -- Verify test data exists
@@ -84,12 +84,12 @@ COMMIT;
 
 ### Test 1.1: Database Link Connectivity
 
-**Objective:** Verify Oracle Oracle 23ai Database can access Oracle 19c via VNet peering
+**Objective:** Verify Oracle Database 23ai on Azure VM can access Oracle 19c via VNet peering
 
 ```sql
 -- Test 1.1.1: Test database link
 SELECT COUNT(*) AS sr_count
-FROM SIEBEL.S_SRV_REQ@SIEBEL_12C_LINK;
+FROM SIEBEL.S_SRV_REQ@SIEBEL_19C_LINK;
 
 -- Expected: Returns a number without errors
 -- Pass Criteria: Query executes successfully
@@ -138,20 +138,24 @@ WHERE ROWNUM <= 10;
 | UT-DATA-002 | Narratives not NULL | No NULL values | | ⬜ |
 | UT-DATA-003 | Catalog paths present | All have paths | | ⬜ |
 
-### Test 1.3: OCI Embedding Generation
+### Test 1.3: Azure AI Foundry with OpenAI Service Embedding Generation
 
 **Objective:** Verify embedding generation works
 
 ```sql
--- Test 1.3.1: Test OCI credential
+-- Test 1.3.1: Test Azure AI Foundry credential
 DECLARE
     l_response CLOB;
+    l_request_body CLOB;
+    l_api_endpoint VARCHAR2(500) := 'https://<workspace-name>.<region>.api.azureml.ms/openai/deployments/text-embedding-3-small/embeddings?api-version=2024-02-15-preview';
 BEGIN
+    l_request_body := '{"input": ["test"], "model": "text-embedding-3-small"}';
+    
     l_response := DBMS_CLOUD.SEND_REQUEST(
-        credential_name => 'OCI_GENAI_CREDENTIAL',
-        uri => 'https://inference.generativeai.us-ashburn-1.oci.oraclecloud.com/20231130/actions/embedText',
+        credential_name => 'AZURE_AI_FOUNDRY_CRED',
+        uri => l_api_endpoint,
         method => 'POST',
-        body => UTL_RAW.CAST_TO_RAW('{"inputs":["test"]}')
+        body => UTL_RAW.CAST_TO_RAW(l_request_body)
     );
     DBMS_OUTPUT.PUT_LINE('SUCCESS: ' || SUBSTR(l_response, 1, 100));
 EXCEPTION
@@ -160,16 +164,16 @@ EXCEPTION
 END;
 /
 
--- Pass Criteria: No exceptions, response contains "embeddings"
--- Fail Action: Verify OCI credentials, check network ACL
+-- Pass Criteria: No exceptions, response contains "data"
+-- Fail Action: Verify Azure AI Foundry credentials, check network ACL
 
 -- Test 1.3.2: Generate test embedding
 SET SERVEROUTPUT ON;
 BEGIN
     GENERATE_EMBEDDINGS_BATCH(
         p_batch_size => 1,
-        p_compartment_id => '<COMPARTMENT_OCID>',
-        p_region => 'us-ashburn-1'
+        p_workspace_endpoint => 'https://<workspace-name>.<region>.api.azureml.ms',
+        p_deployment_name => 'text-embedding-3-small'
     );
 END;
 /
@@ -180,8 +184,8 @@ END;
 
 | Test ID | Description | Expected Result | Actual Result | Status |
 |---------|-------------|-----------------|---------------|--------|
-| UT-EMB-001 | OCI API accessible | HTTP 200 response | | ⬜ |
-| UT-EMB-002 | Embedding dimensions | 1024 dimensions | | ⬜ |
+| UT-EMB-001 | Azure AI Foundry API accessible | HTTP 200 response | | ⬜ |
+| UT-EMB-002 | Embedding dimensions | 1536 dimensions | | ⬜ |
 | UT-EMB-003 | Batch processing | No errors | | ⬜ |
 
 ### Test 1.4: Vector Index Performance
@@ -193,7 +197,7 @@ END;
 SET TIMING ON;
 
 DECLARE
-    l_test_vector VECTOR(1024, FLOAT64);
+    l_test_vector VECTOR(1536, FLOAT32);
 BEGIN
     -- Get a sample vector
     SELECT NARRATIVE_VECTOR INTO l_test_vector
@@ -395,7 +399,7 @@ kill <ords_pid>
 
 **Test 2.3.2: Database Connection Loss**
 ```sql
--- Simulate connection issue (as ADMIN user in Oracle 23ai Database)
+-- Simulate connection issue (as ADMIN user in Oracle 23ai)
 ALTER SYSTEM KILL SESSION '<sid>,<serial#>' IMMEDIATE;
 ```
 

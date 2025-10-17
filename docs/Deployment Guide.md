@@ -151,6 +151,361 @@ Backup: Enable Azure Backup (recommended for production)
 4. Wait for deployment to complete (typically 5-10 minutes)
 5. Note the **Private IP Address** for later configuration
 
+### Step 1.1.1: Configure Network Security Groups (NSGs)
+
+**Duration:** 30 minutes  
+**Executor:** Cloud Administrator / Network Administrator
+
+Network Security Groups control inbound and outbound traffic to Azure resources. Proper NSG configuration is critical for security and connectivity.
+
+#### NSG Architecture
+
+```
+Azure VNet (10.0.0.0/16)
+├── Management Subnet (10.0.1.0/24) - Azure Bastion, Jump Box
+├── Siebel Subnet (10.0.2.0/24) - Siebel CRM VMs
+├── Database Subnet (10.0.3.0/24) - Oracle 23ai VM
+├── Application Subnet (10.0.4.0/24) - Test apps, Container Apps
+└── AI Foundry Subnet (10.0.5.0/24) - Private Endpoints
+```
+
+#### Create Network Security Groups
+
+```bash
+# Set variables
+RESOURCE_GROUP="<your-resource-group>"
+LOCATION="<azure-region>"
+VNET_NAME="semantic-search-vnet"
+
+# Create NSG for Database Subnet (Oracle 23ai VM)
+az network nsg create \
+  --resource-group $RESOURCE_GROUP \
+  --name database-nsg \
+  --location $LOCATION
+
+# Create NSG for Siebel Subnet
+az network nsg create \
+  --resource-group $RESOURCE_GROUP \
+  --name siebel-nsg \
+  --location $LOCATION
+
+# Create NSG for Application Subnet
+az network nsg create \
+  --resource-group $RESOURCE_GROUP \
+  --name application-nsg \
+  --location $LOCATION
+```
+
+#### Configure Database NSG (Oracle 23ai VM)
+
+**Inbound Security Rules:**
+
+| Priority | Name | Source | Source Port | Destination | Dest Port | Protocol | Action | Description |
+|----------|------|--------|-------------|-------------|-----------|----------|--------|-------------|
+| 100 | Allow-SSH-Bastion | Management-subnet (10.0.1.0/24) | * | VirtualNetwork | 22 | TCP | Allow | SSH access from Bastion |
+| 110 | Allow-Oracle-Listener-Siebel | Siebel-subnet (10.0.2.0/24) | * | VirtualNetwork | 1521 | TCP | Allow | Oracle database connections from Siebel |
+| 120 | Allow-ORDS-HTTP-Siebel | Siebel-subnet (10.0.2.0/24) | * | VirtualNetwork | 8080 | TCP | Allow | ORDS HTTP from Siebel |
+| 130 | Allow-ORDS-HTTP-Apps | Application-subnet (10.0.4.0/24) | * | VirtualNetwork | 8080 | TCP | Allow | ORDS HTTP from test apps |
+| 140 | Allow-ORDS-HTTPS-Siebel | Siebel-subnet (10.0.2.0/24) | * | VirtualNetwork | 443 | TCP | Allow | ORDS HTTPS from Siebel (production) |
+| 150 | Allow-ORDS-HTTPS-Apps | Application-subnet (10.0.4.0/24) | * | VirtualNetwork | 443 | TCP | Allow | ORDS HTTPS from test apps (production) |
+| 65000 | Allow-VNet-Inbound | VirtualNetwork | * | VirtualNetwork | * | Any | Allow | Default Azure rule |
+| 65001 | Allow-AzureLoadBalancer | AzureLoadBalancer | * | * | * | Any | Allow | Default Azure rule |
+| 65500 | Deny-All-Inbound | * | * | * | * | Any | Deny | Explicit deny all |
+
+**Outbound Security Rules:**
+
+| Priority | Name | Source | Source Port | Destination | Dest Port | Protocol | Action | Description |
+|----------|------|--------|-------------|-------------|-----------|----------|--------|-------------|
+| 100 | Allow-Oracle-To-Siebel | VirtualNetwork | * | Siebel-subnet (10.0.2.0/24) | 1521 | TCP | Allow | Database link to Siebel Oracle 19c |
+| 110 | Allow-Azure-AI-Foundry | VirtualNetwork | * | AzureCloud.EastUS | 443 | TCP | Allow | Azure AI Foundry API (use your region) |
+| 120 | Allow-Internet-HTTPS | VirtualNetwork | * | Internet | 443 | TCP | Allow | Software updates, Azure services |
+| 130 | Allow-Internet-HTTP | VirtualNetwork | * | Internet | 80 | TCP | Allow | Package downloads (yum, wget) |
+| 140 | Allow-DNS | VirtualNetwork | * | VirtualNetwork | 53 | TCP,UDP | Allow | DNS resolution |
+| 150 | Allow-NTP | VirtualNetwork | * | Internet | 123 | UDP | Allow | Time synchronization |
+| 65000 | Allow-VNet-Outbound | VirtualNetwork | * | VirtualNetwork | * | Any | Allow | Default Azure rule |
+| 65001 | Allow-Internet-Outbound | * | * | Internet | * | Any | Allow | Default Azure rule |
+| 65500 | Deny-All-Outbound | * | * | * | * | Any | Deny | Explicit deny all (optional) |
+
+**Create NSG Rules via Azure CLI:**
+
+```bash
+# Database NSG - Inbound Rules
+az network nsg rule create \
+  --resource-group $RESOURCE_GROUP \
+  --nsg-name database-nsg \
+  --name Allow-SSH-Bastion \
+  --priority 100 \
+  --source-address-prefixes 10.0.1.0/24 \
+  --destination-port-ranges 22 \
+  --protocol Tcp \
+  --access Allow \
+  --direction Inbound \
+  --description "SSH access from Azure Bastion"
+
+az network nsg rule create \
+  --resource-group $RESOURCE_GROUP \
+  --nsg-name database-nsg \
+  --name Allow-Oracle-Listener-Siebel \
+  --priority 110 \
+  --source-address-prefixes 10.0.2.0/24 \
+  --destination-port-ranges 1521 \
+  --protocol Tcp \
+  --access Allow \
+  --direction Inbound \
+  --description "Oracle Listener from Siebel subnet"
+
+az network nsg rule create \
+  --resource-group $RESOURCE_GROUP \
+  --nsg-name database-nsg \
+  --name Allow-ORDS-HTTP-Siebel \
+  --priority 120 \
+  --source-address-prefixes 10.0.2.0/24 \
+  --destination-port-ranges 8080 \
+  --protocol Tcp \
+  --access Allow \
+  --direction Inbound \
+  --description "ORDS HTTP from Siebel subnet"
+
+az network nsg rule create \
+  --resource-group $RESOURCE_GROUP \
+  --nsg-name database-nsg \
+  --name Allow-ORDS-HTTP-Apps \
+  --priority 130 \
+  --source-address-prefixes 10.0.4.0/24 \
+  --destination-port-ranges 8080 \
+  --protocol Tcp \
+  --access Allow \
+  --direction Inbound \
+  --description "ORDS HTTP from application subnet"
+
+az network nsg rule create \
+  --resource-group $RESOURCE_GROUP \
+  --nsg-name database-nsg \
+  --name Allow-ORDS-HTTPS-Siebel \
+  --priority 140 \
+  --source-address-prefixes 10.0.2.0/24 \
+  --destination-port-ranges 443 \
+  --protocol Tcp \
+  --access Allow \
+  --direction Inbound \
+  --description "ORDS HTTPS from Siebel (production)"
+
+az network nsg rule create \
+  --resource-group $RESOURCE_GROUP \
+  --nsg-name database-nsg \
+  --name Allow-ORDS-HTTPS-Apps \
+  --priority 150 \
+  --source-address-prefixes 10.0.4.0/24 \
+  --destination-port-ranges 443 \
+  --protocol Tcp \
+  --access Allow \
+  --direction Inbound \
+  --description "ORDS HTTPS from applications (production)"
+
+# Database NSG - Outbound Rules
+az network nsg rule create \
+  --resource-group $RESOURCE_GROUP \
+  --nsg-name database-nsg \
+  --name Allow-Oracle-To-Siebel \
+  --priority 100 \
+  --source-address-prefixes VirtualNetwork \
+  --destination-address-prefixes 10.0.2.0/24 \
+  --destination-port-ranges 1521 \
+  --protocol Tcp \
+  --access Allow \
+  --direction Outbound \
+  --description "Database link to Siebel Oracle 19c"
+
+az network nsg rule create \
+  --resource-group $RESOURCE_GROUP \
+  --nsg-name database-nsg \
+  --name Allow-Azure-AI-Foundry \
+  --priority 110 \
+  --source-address-prefixes VirtualNetwork \
+  --destination-address-prefixes AzureCloud.EastUS \
+  --destination-port-ranges 443 \
+  --protocol Tcp \
+  --access Allow \
+  --direction Outbound \
+  --description "Azure AI Foundry API access"
+
+az network nsg rule create \
+  --resource-group $RESOURCE_GROUP \
+  --nsg-name database-nsg \
+  --name Allow-Internet-HTTPS \
+  --priority 120 \
+  --source-address-prefixes VirtualNetwork \
+  --destination-address-prefixes Internet \
+  --destination-port-ranges 443 \
+  --protocol Tcp \
+  --access Allow \
+  --direction Outbound \
+  --description "HTTPS for Azure services and updates"
+
+az network nsg rule create \
+  --resource-group $RESOURCE_GROUP \
+  --nsg-name database-nsg \
+  --name Allow-Internet-HTTP \
+  --priority 130 \
+  --source-address-prefixes VirtualNetwork \
+  --destination-address-prefixes Internet \
+  --destination-port-ranges 80 \
+  --protocol Tcp \
+  --access Allow \
+  --direction Outbound \
+  --description "HTTP for package downloads"
+```
+
+#### Associate NSG with Subnet
+
+```bash
+# Associate database NSG with database subnet
+az network vnet subnet update \
+  --resource-group $RESOURCE_GROUP \
+  --vnet-name $VNET_NAME \
+  --name database-subnet \
+  --network-security-group database-nsg
+
+# Verify NSG association
+az network vnet subnet show \
+  --resource-group $RESOURCE_GROUP \
+  --vnet-name $VNET_NAME \
+  --name database-subnet \
+  --query "networkSecurityGroup.id"
+```
+
+#### Configure Siebel NSG (Optional - for reference)
+
+**Inbound Rules:**
+
+| Priority | Name | Source | Dest Port | Description |
+|----------|------|--------|-----------|-------------|
+| 100 | Allow-HTTPS-Users | Internet or Corporate Network | 443 | HTTPS for Siebel web users |
+| 110 | Allow-SSH-Mgmt | Management-subnet | 22 | SSH for management |
+| 120 | Allow-Siebel-Ports | VirtualNetwork | 2321, 8080 | Siebel application ports |
+
+**Outbound Rules:**
+
+| Priority | Name | Destination | Dest Port | Description |
+|----------|------|-------------|-----------|-------------|
+| 100 | Allow-Oracle-23ai | Database-subnet | 1521, 8080, 443 | Oracle 23ai database and ORDS |
+| 110 | Allow-Internet | Internet | 443, 80 | Internet access |
+
+#### NSG Security Best Practices
+
+**1. Principle of Least Privilege:**
+- Only allow ports that are absolutely necessary
+- Use specific source IP ranges instead of * (any)
+- Remove default allow rules if possible
+
+**2. Service Tags vs IP Ranges:**
+```bash
+# Prefer Service Tags for Azure services
+--destination-address-prefixes AzureCloud.EastUS  # Good
+--destination-address-prefixes Internet            # Use with caution
+
+# For specific services
+--destination-address-prefixes Storage.EastUS      # Azure Storage
+--destination-address-prefixes Sql.EastUS          # Azure SQL
+```
+
+**3. NSG Flow Logs (Recommended for Production):**
+```bash
+# Create storage account for NSG flow logs
+az storage account create \
+  --name nsgflowlogs$RANDOM \
+  --resource-group $RESOURCE_GROUP \
+  --location $LOCATION \
+  --sku Standard_LRS
+
+# Enable NSG flow logs
+az network watcher flow-log create \
+  --resource-group $RESOURCE_GROUP \
+  --nsg database-nsg \
+  --name database-nsg-flow-log \
+  --location $LOCATION \
+  --storage-account nsgflowlogs$RANDOM \
+  --enabled true \
+  --retention 30 \
+  --format JSON \
+  --log-version 2
+```
+
+**4. NSG Diagnostic Settings:**
+```bash
+# Create Log Analytics workspace
+az monitor log-analytics workspace create \
+  --resource-group $RESOURCE_GROUP \
+  --workspace-name semantic-search-logs \
+  --location $LOCATION
+
+# Get workspace ID
+WORKSPACE_ID=$(az monitor log-analytics workspace show \
+  --resource-group $RESOURCE_GROUP \
+  --workspace-name semantic-search-logs \
+  --query id -o tsv)
+
+# Enable diagnostic logs for NSG
+az monitor diagnostic-settings create \
+  --name nsg-diagnostics \
+  --resource $(az network nsg show --resource-group $RESOURCE_GROUP --name database-nsg --query id -o tsv) \
+  --workspace $WORKSPACE_ID \
+  --logs '[{"category": "NetworkSecurityGroupEvent", "enabled": true}, {"category": "NetworkSecurityGroupRuleCounter", "enabled": true}]'
+```
+
+#### Verify NSG Configuration
+
+```bash
+# List all NSG rules
+az network nsg show \
+  --resource-group $RESOURCE_GROUP \
+  --name database-nsg \
+  --query "securityRules[].{Name:name, Priority:priority, Direction:direction, Access:access, Protocol:protocol, SourcePort:sourcePortRange, DestPort:destinationPortRange}" \
+  --output table
+
+# Test connectivity (from Siebel VM to Oracle 23ai VM)
+# SSH to Siebel VM, then:
+telnet <oracle-23ai-vm-private-ip> 8080
+# Expected: Connected
+
+# Test from Oracle 23ai VM to Siebel Oracle 19c
+# SSH to Oracle 23ai VM, then:
+telnet <siebel-vm-private-ip> 1521
+# Expected: Connected
+```
+
+#### NSG Troubleshooting
+
+**Connection Issues:**
+
+```bash
+# Check effective NSG rules on network interface
+az network nic list-effective-nsg \
+  --resource-group $RESOURCE_GROUP \
+  --name <vm-nic-name>
+
+# Verify IP flow (from Siebel to Oracle 23ai)
+az network watcher test-ip-flow \
+  --resource-group $RESOURCE_GROUP \
+  --vm <siebel-vm-name> \
+  --direction Outbound \
+  --protocol TCP \
+  --local <siebel-vm-ip>:* \
+  --remote <oracle-23ai-vm-ip>:8080
+# Expected: Access: Allow
+
+# Check connection monitor
+az network watcher connection-monitor create \
+  --resource-group $RESOURCE_GROUP \
+  --name siebel-to-oracle23ai \
+  --source-resource <siebel-vm-id> \
+  --dest-resource <oracle-23ai-vm-id> \
+  --dest-port 8080 \
+  --protocol Tcp
+```
+
+---
+
 ### Step 1.2: Configure OS and Storage for Oracle Database
 
 **Connect to VM via SSH or Azure Bastion:**
@@ -588,6 +943,460 @@ FROM dba_network_acls;
 EXIT;
 ```
 
+### Step 2.11: Configure Azure AI Foundry Private Endpoint (Recommended for Production)
+
+**Duration:** 45 minutes  
+**Executor:** Cloud Administrator / Network Administrator
+
+Azure Private Endpoints provide secure, private connectivity to Azure AI Foundry services over your Azure VNet, eliminating exposure to the public internet.
+
+#### Benefits of Private Endpoint
+
+| Benefit | Public Endpoint | Private Endpoint |
+|---------|----------------|------------------|
+| **Security** | Traffic traverses public internet | Traffic stays within Azure backbone |
+| **Compliance** | May not meet data residency requirements | Meets strict compliance requirements |
+| **Latency** | Variable (depends on internet routing) | Predictable, lower latency |
+| **Data Exfiltration** | Risk of unauthorized data transfer | Network-level controls prevent exfiltration |
+| **IP Whitelisting** | Required on Azure AI Foundry | Not required (private IP access) |
+
+#### Prerequisites
+
+```bash
+# Ensure Azure CLI is logged in
+az login
+
+# Set variables
+RESOURCE_GROUP="<your-resource-group>"
+LOCATION="<azure-region>"
+VNET_NAME="semantic-search-vnet"
+SUBNET_NAME="ai-foundry-subnet"
+AI_FOUNDRY_WORKSPACE_NAME="<your-ai-foundry-workspace>"
+AI_FOUNDRY_RESOURCE_ID=$(az ml workspace show \
+  --name $AI_FOUNDRY_WORKSPACE_NAME \
+  --resource-group $RESOURCE_GROUP \
+  --query id -o tsv)
+```
+
+#### Step 1: Create Subnet for Private Endpoints
+
+```bash
+# Create dedicated subnet for private endpoints
+# Note: Disable private endpoint network policies on this subnet
+az network vnet subnet create \
+  --resource-group $RESOURCE_GROUP \
+  --vnet-name $VNET_NAME \
+  --name $SUBNET_NAME \
+  --address-prefixes 10.0.5.0/24 \
+  --disable-private-endpoint-network-policies true
+
+# Verify subnet creation
+az network vnet subnet show \
+  --resource-group $RESOURCE_GROUP \
+  --vnet-name $VNET_NAME \
+  --name $SUBNET_NAME \
+  --query "{Name:name, AddressPrefix:addressPrefix, PrivateEndpointNetworkPolicies:privateEndpointNetworkPolicies}"
+```
+
+#### Step 2: Create Private Endpoint
+
+```bash
+# Create private endpoint for Azure AI Foundry workspace
+az network private-endpoint create \
+  --resource-group $RESOURCE_GROUP \
+  --name ai-foundry-private-endpoint \
+  --location $LOCATION \
+  --vnet-name $VNET_NAME \
+  --subnet $SUBNET_NAME \
+  --private-connection-resource-id $AI_FOUNDRY_RESOURCE_ID \
+  --group-id amlworkspace \
+  --connection-name ai-foundry-connection
+
+# Get private endpoint details
+PRIVATE_ENDPOINT_IP=$(az network private-endpoint show \
+  --resource-group $RESOURCE_GROUP \
+  --name ai-foundry-private-endpoint \
+  --query "customDnsConfigs[0].ipAddresses[0]" -o tsv)
+
+echo "Private Endpoint IP: $PRIVATE_ENDPOINT_IP"
+```
+
+#### Step 3: Create Private DNS Zone
+
+```bash
+# Create private DNS zone for Azure Machine Learning (AI Foundry uses ML infrastructure)
+az network private-dns zone create \
+  --resource-group $RESOURCE_GROUP \
+  --name privatelink.api.azureml.ms
+
+# Link DNS zone to VNet
+az network private-dns link vnet create \
+  --resource-group $RESOURCE_GROUP \
+  --zone-name privatelink.api.azureml.ms \
+  --name ai-foundry-dns-link \
+  --virtual-network $VNET_NAME \
+  --registration-enabled false
+
+# Verify DNS zone and link
+az network private-dns zone show \
+  --resource-group $RESOURCE_GROUP \
+  --name privatelink.api.azureml.ms
+
+az network private-dns link vnet list \
+  --resource-group $RESOURCE_GROUP \
+  --zone-name privatelink.api.azureml.ms \
+  --output table
+```
+
+#### Step 4: Configure DNS Records
+
+```bash
+# Create DNS record group for private endpoint
+az network private-endpoint dns-zone-group create \
+  --resource-group $RESOURCE_GROUP \
+  --endpoint-name ai-foundry-private-endpoint \
+  --name ai-foundry-dns-zone-group \
+  --private-dns-zone privatelink.api.azureml.ms \
+  --zone-name privatelink.api.azureml.ms
+
+# Verify DNS zone group
+az network private-endpoint dns-zone-group show \
+  --resource-group $RESOURCE_GROUP \
+  --endpoint-name ai-foundry-private-endpoint \
+  --name ai-foundry-dns-zone-group
+
+# List DNS records (should show A record for workspace)
+az network private-dns record-set a list \
+  --resource-group $RESOURCE_GROUP \
+  --zone-name privatelink.api.azureml.ms \
+  --output table
+```
+
+#### Step 5: Update Network ACL for Private Endpoint
+
+If you completed Step 2.10 (Azure AI Foundry ACL), update the ACL to include the private endpoint subnet:
+
+```sql
+sqlplus / as sysdba
+
+-- Add private endpoint subnet to ACL
+BEGIN
+  -- Allow connections to private endpoint IP range
+  DBMS_NETWORK_ACL_ADMIN.ASSIGN_ACL (
+    acl          => 'azure_ai_foundry_acl.xml',
+    host         => '10.0.5.*',  -- Private endpoint subnet
+    lower_port   => 443,
+    upper_port   => 443
+  );
+  
+  COMMIT;
+END;
+/
+
+-- Verify updated ACL
+SELECT host, lower_port, upper_port, acl
+FROM dba_network_acls
+ORDER BY host;
+
+EXIT;
+```
+
+#### Step 6: Update NSG Rules (Already completed in Step 1.1.1)
+
+The NSG rules created in Step 1.1.1 already allow traffic to `AzureCloud.EastUS` service tag, which includes both public and private endpoints. No additional NSG rules are required.
+
+#### Step 7: Verify Private Endpoint Connectivity
+
+**Test DNS Resolution:**
+```bash
+# SSH to Oracle 23ai VM
+ssh <admin_user>@<vm_private_ip>
+
+# Test DNS resolution (should resolve to private IP 10.0.5.x)
+nslookup <workspace-name>.<region>.api.azureml.ms
+
+# Example:
+# nslookup my-ai-workspace.eastus.api.azureml.ms
+# Expected output:
+# Name: my-ai-workspace.privatelink.api.azureml.ms
+# Address: 10.0.5.4  (private IP, not public)
+```
+
+**Test Connectivity:**
+```bash
+# Test HTTPS connection to private endpoint
+curl -v -k https://<workspace-name>.<region>.api.azureml.ms/health
+
+# Example:
+# curl -v -k https://my-ai-workspace.eastus.api.azureml.ms/health
+# Expected: Connection should succeed via private IP
+```
+
+**Test from PL/SQL:**
+```sql
+sqlplus SEMANTIC_SEARCH/<password>@VECDB
+
+-- Test network connectivity via UTL_HTTP
+SET SERVEROUTPUT ON;
+DECLARE
+  l_req    UTL_HTTP.REQ;
+  l_resp   UTL_HTTP.RESP;
+  l_url    VARCHAR2(4000);
+  l_buffer VARCHAR2(32767);
+BEGIN
+  -- Construct private endpoint URL
+  l_url := 'https://<workspace-name>.<region>.api.azureml.ms/health';
+  
+  -- Set HTTP version and wallet
+  UTL_HTTP.SET_WALLET('');
+  
+  -- Send request
+  l_req := UTL_HTTP.BEGIN_REQUEST(l_url, 'GET', 'HTTP/1.1');
+  UTL_HTTP.SET_HEADER(l_req, 'User-Agent', 'Oracle Database');
+  
+  -- Get response
+  l_resp := UTL_HTTP.GET_RESPONSE(l_req);
+  
+  DBMS_OUTPUT.PUT_LINE('HTTP Status: ' || l_resp.status_code);
+  DBMS_OUTPUT.PUT_LINE('Private Endpoint connectivity: SUCCESS');
+  
+  UTL_HTTP.END_RESPONSE(l_resp);
+EXCEPTION
+  WHEN OTHERS THEN
+    DBMS_OUTPUT.PUT_LINE('Error: ' || SQLERRM);
+    DBMS_OUTPUT.PUT_LINE('Private Endpoint connectivity: FAILED');
+END;
+/
+
+EXIT;
+```
+
+#### Step 8: Update Stored Procedures for Private Endpoint
+
+The existing procedures (`GENERATE_EMBEDDINGS_BATCH`, `GET_SEMANTIC_RECOMMENDATIONS`) should work without modification. The private endpoint URL is identical to the public URL:
+
+```
+Public:  https://<workspace-name>.<region>.api.azureml.ms/...
+Private: https://<workspace-name>.<region>.api.azureml.ms/...
+         (resolves to 10.0.5.x instead of public IP)
+```
+
+No code changes required—DNS automatically routes to private endpoint.
+
+#### Step 9: Disable Public Access (Production Only)
+
+For maximum security, disable public network access to Azure AI Foundry workspace:
+
+```bash
+# Disable public network access
+az ml workspace update \
+  --name $AI_FOUNDRY_WORKSPACE_NAME \
+  --resource-group $RESOURCE_GROUP \
+  --public-network-access Disabled
+
+# Verify public access is disabled
+az ml workspace show \
+  --name $AI_FOUNDRY_WORKSPACE_NAME \
+  --resource-group $RESOURCE_GROUP \
+  --query "{Name:name, PublicNetworkAccess:publicNetworkAccess}"
+```
+
+**Important:** After disabling public access:
+- All API calls must originate from VNet or peered networks
+- Azure Portal access may be limited (use Azure Bastion)
+- Testing from local machine will fail unless connected via VPN/ExpressRoute
+
+#### Step 10: Monitor Private Endpoint
+
+**Enable Private Endpoint Diagnostics:**
+```bash
+# Create Log Analytics workspace (if not exists from NSG setup)
+WORKSPACE_ID=$(az monitor log-analytics workspace show \
+  --resource-group $RESOURCE_GROUP \
+  --workspace-name semantic-search-logs \
+  --query id -o tsv)
+
+# Enable diagnostic logs for private endpoint
+PRIVATE_ENDPOINT_ID=$(az network private-endpoint show \
+  --resource-group $RESOURCE_GROUP \
+  --name ai-foundry-private-endpoint \
+  --query id -o tsv)
+
+az monitor diagnostic-settings create \
+  --name private-endpoint-diagnostics \
+  --resource $PRIVATE_ENDPOINT_ID \
+  --workspace $WORKSPACE_ID \
+  --logs '[{"category": "PrivateEndpointNetworkActivity", "enabled": true}]'
+```
+
+**Query Private Endpoint Logs (Azure Monitor):**
+```kusto
+// Count requests by result code
+AzureDiagnostics
+| where Category == "PrivateEndpointNetworkActivity"
+| summarize Count=count() by ResultCode, bin(TimeGenerated, 1h)
+| render timechart
+
+// Find failed connections
+AzureDiagnostics
+| where Category == "PrivateEndpointNetworkActivity"
+| where ResultCode != 200
+| project TimeGenerated, ResourceId, ResultCode, Message
+```
+
+#### Performance Comparison: Public vs Private Endpoint
+
+**Benchmark Procedure:**
+```sql
+sqlplus SEMANTIC_SEARCH/<password>@VECDB
+
+-- Create benchmark table
+CREATE TABLE endpoint_latency_test (
+  test_id NUMBER PRIMARY KEY,
+  endpoint_type VARCHAR2(20),  -- 'PUBLIC' or 'PRIVATE'
+  request_time TIMESTAMP,
+  response_time TIMESTAMP,
+  latency_ms NUMBER,
+  status_code NUMBER
+);
+
+-- Benchmark procedure
+CREATE OR REPLACE PROCEDURE BENCHMARK_ENDPOINT_LATENCY(
+  p_endpoint_type IN VARCHAR2,
+  p_iterations IN NUMBER DEFAULT 100
+) AS
+  l_start_time TIMESTAMP;
+  l_end_time TIMESTAMP;
+  l_latency_ms NUMBER;
+  l_status_code NUMBER;
+BEGIN
+  FOR i IN 1..p_iterations LOOP
+    l_start_time := SYSTIMESTAMP;
+    
+    -- Call embedding generation (small test)
+    BEGIN
+      GENERATE_EMBEDDINGS_BATCH(
+        p_sr_num_start => 'SR-2024-00001',
+        p_sr_num_end   => 'SR-2024-00001',
+        p_batch_size   => 1
+      );
+      l_status_code := 200;
+    EXCEPTION
+      WHEN OTHERS THEN
+        l_status_code := 500;
+    END;
+    
+    l_end_time := SYSTIMESTAMP;
+    l_latency_ms := EXTRACT(SECOND FROM (l_end_time - l_start_time)) * 1000;
+    
+    INSERT INTO endpoint_latency_test VALUES (
+      i, p_endpoint_type, l_start_time, l_end_time, l_latency_ms, l_status_code
+    );
+    
+    COMMIT;
+    
+    -- Small delay between requests
+    DBMS_LOCK.SLEEP(0.5);
+  END LOOP;
+END;
+/
+
+-- Run benchmark (100 requests each)
+EXEC BENCHMARK_ENDPOINT_LATENCY('PUBLIC', 100);
+-- Now switch to private endpoint (update DNS or firewall)
+EXEC BENCHMARK_ENDPOINT_LATENCY('PRIVATE', 100);
+
+-- Compare results
+SELECT 
+  endpoint_type,
+  COUNT(*) as total_requests,
+  ROUND(AVG(latency_ms), 2) as avg_latency_ms,
+  ROUND(MIN(latency_ms), 2) as min_latency_ms,
+  ROUND(MAX(latency_ms), 2) as max_latency_ms,
+  ROUND(PERCENTILE_CONT(0.95) WITHIN GROUP (ORDER BY latency_ms), 2) as p95_latency_ms,
+  SUM(CASE WHEN status_code = 200 THEN 1 ELSE 0 END) as successful_requests,
+  ROUND(SUM(CASE WHEN status_code = 200 THEN 1 ELSE 0 END) / COUNT(*) * 100, 2) as success_rate_pct
+FROM endpoint_latency_test
+GROUP BY endpoint_type
+ORDER BY endpoint_type;
+
+-- Expected results:
+-- PUBLIC:  avg_latency_ms = 80-150ms, p95 = 200ms
+-- PRIVATE: avg_latency_ms = 30-60ms,  p95 = 100ms
+-- Private endpoint typically shows 40-60% latency improvement
+```
+
+#### Private Endpoint Architecture Diagram
+
+```
+┌─────────────────────────────────────────────────────────────┐
+│ Azure VNet (10.0.0.0/16)                                    │
+│                                                             │
+│  ┌──────────────────────┐         ┌────────────────────┐   │
+│  │ Database Subnet      │         │ AI Foundry Subnet  │   │
+│  │ (10.0.3.0/24)        │         │ (10.0.5.0/24)      │   │
+│  │                      │         │                    │   │
+│  │ ┌─────────────────┐  │         │ ┌───────────────┐  │   │
+│  │ │ Oracle 23ai VM  │  │         │ │ Private       │  │   │
+│  │ │ - PL/SQL        │──┼─────────┼▶│ Endpoint      │  │   │
+│  │ │ - ORDS          │  │ Private │ │ (10.0.5.4)    │  │   │
+│  │ └─────────────────┘  │ Traffic │ └───────┬───────┘  │   │
+│  └──────────────────────┘         │         │          │   │
+└────────────────────────────────────┼─────────┼──────────┘   
+                                     │         │              
+                        Azure Backbone (Private)             
+                                     │         │              
+                           ┌─────────▼─────────▼──────┐       
+                           │ Azure AI Foundry         │       
+                           │ (Private Link Service)   │       
+                           │ - OpenAI Embeddings      │       
+                           │ - No Public IP           │       
+                           └──────────────────────────┘       
+```
+
+#### Troubleshooting Private Endpoint
+
+**DNS Not Resolving to Private IP:**
+```bash
+# Check DNS zone link
+az network private-dns link vnet show \
+  --resource-group $RESOURCE_GROUP \
+  --zone-name privatelink.api.azureml.ms \
+  --name ai-foundry-dns-link
+
+# Verify DNS records exist
+az network private-dns record-set a list \
+  --resource-group $RESOURCE_GROUP \
+  --zone-name privatelink.api.azureml.ms
+
+# From Oracle VM, check /etc/resolv.conf
+cat /etc/resolv.conf
+# Should show Azure DNS: nameserver 168.63.129.16
+```
+
+**Connection Timeout:**
+```bash
+# Verify NSG allows outbound to AI Foundry subnet
+az network nsg rule show \
+  --resource-group $RESOURCE_GROUP \
+  --nsg-name database-nsg \
+  --name Allow-Azure-AI-Foundry
+
+# Check route table (should not have route blocking private endpoint)
+az network nic show-effective-route-table \
+  --resource-group $RESOURCE_GROUP \
+  --name <oracle-vm-nic-name>
+```
+
+**Certificate Validation Errors:**
+```sql
+-- Oracle Wallet issue - reload certificates
+BEGIN
+  UTL_HTTP.SET_WALLET('file:/u01/app/oracle/admin/VECDB/wallet', 'WalletPassword123');
+END;
+/
+```
+
 ---
 
 ## Phase 3: Install and Configure ORDS (Oracle REST Data Services)
@@ -901,6 +1710,457 @@ ps -ef | grep ords
 
 # Restart ORDS service
 sudo systemctl restart ords.service
+```
+
+---
+
+### Step 3.9: Advanced ORDS Configuration (Production Recommendations)
+
+**Duration:** 1-2 hours  
+**Executor:** Database Administrator / System Administrator
+
+#### 3.9.1. Connection Pool Tuning
+
+Optimize ORDS connection pool for production workloads:
+
+```bash
+# Edit pool configuration
+vi /opt/oracle/ords/config/databases/default/pool.xml
+```
+
+Add the following settings:
+
+```xml
+<?xml version="1.0" encoding="UTF-8"?>
+<pool>
+  <name>default</name>
+  
+  <!-- Database Connection -->
+  <jdbc.url>jdbc:oracle:thin:@localhost:1521/VECSRCH</jdbc.url>
+  <jdbc.username>ORDS_PUBLIC_USER</jdbc.username>
+  <jdbc.password>!vault!{HmacSHA256}...</jdbc.password>
+  
+  <!-- Connection Pool Settings (Tuned for Production) -->
+  <jdbc.InitialLimit>10</jdbc.InitialLimit>
+  <jdbc.MinLimit>10</jdbc.MinLimit>
+  <jdbc.MaxLimit>50</jdbc.MaxLimit>
+  
+  <!-- Connection Timeout (milliseconds) -->
+  <jdbc.InactivityTimeout>900</jdbc.InactivityTimeout>
+  <jdbc.statementTimeout>900</jdbc.statementTimeout>
+  
+  <!-- Validation Query -->
+  <jdbc.auth.enabled>true</jdbc.auth.enabled>
+  
+  <!-- Connection Properties -->
+  <db.connectionType>basic</db.connectionType>
+  <db.hostname>localhost</db.hostname>
+  <db.port>1521</db.port>
+  <db.servicename>VECSRCH</db.servicename>
+</pool>
+```
+
+**Connection Pool Sizing Guidelines:**
+
+| Workload | Concurrent Users | InitialLimit | MaxLimit | Recommended |
+|----------|------------------|--------------|----------|-------------|
+| Development | < 10 | 5 | 20 | Low resource usage |
+| QA/UAT | 10-50 | 10 | 30 | Medium load testing |
+| Production (Small) | 50-100 | 10 | 50 | Balance performance/resources |
+| Production (Medium) | 100-500 | 20 | 100 | High throughput |
+| Production (Large) | 500+ | 30 | 150 | Maximum performance |
+
+**Formula for sizing:**
+```
+MaxLimit = (Expected Concurrent Users × 0.5) rounded up
+InitialLimit = MaxLimit × 0.2
+MinLimit = InitialLimit
+```
+
+#### 3.9.2. ORDS Global Settings Configuration
+
+Edit global settings for optimal performance:
+
+```bash
+# Edit global settings
+vi /opt/oracle/ords/config/global/settings.xml
+```
+
+**Complete settings.xml for Production:**
+
+```xml
+<?xml version="1.0" encoding="UTF-8"?>
+<settings>
+  <!-- HTTP Server Settings -->
+  <setting id="standalone.http.port">8080</setting>
+  <setting id="standalone.context.path">/ords</setting>
+  
+  <!-- HTTPS Settings (Production) -->
+  <!-- Uncomment for SSL/TLS configuration -->
+  <!-- <setting id="standalone.https.port">443</setting> -->
+  <!-- <setting id="standalone.https.cert">/opt/oracle/ords/config/ssl/cert.pem</setting> -->
+  <!-- <setting id="standalone.https.cert.key">/opt/oracle/ords/config/ssl/key.pem</setting> -->
+  
+  <!-- Static Files -->
+  <setting id="standalone.static.path">/opt/oracle/ords/config/ords/standalone/doc_root</setting>
+  
+  <!-- Logging -->
+  <setting id="standalone.access.log">/opt/oracle/ords/logs</setting>
+  <setting id="log.logging">true</setting>
+  <setting id="log.maxEntries">500</setting>
+  
+  <!-- Security -->
+  <setting id="security.requestValidationFunction">ords_util.validate_request</setting>
+  <setting id="security.disableDefaultExclusionList">false</setting>
+  
+  <!-- Performance Tuning -->
+  <setting id="jdbc.MaxLimit">50</setting>
+  <setting id="jdbc.InitialLimit">10</setting>
+  <setting id="jdbc.MinLimit">10</setting>
+  <setting id="jdbc.InactivityTimeout">900</setting>
+  <setting id="jdbc.statementTimeout">900</setting>
+  
+  <!-- Request Handling -->
+  <setting id="request.traceHeaderName">X-ORDS-Trace</setting>
+  <setting id="standalone.max.request.header.size">8192</setting>
+  
+  <!-- Debug (disable in production) -->
+  <setting id="debug.printDebugToScreen">false</setting>
+  <setting id="debug.debugger">false</setting>
+  
+  <!-- Error Handling -->
+  <setting id="error.responseFormat">JSON</setting>
+  <setting id="error.keepErrorMessages">false</setting>
+</settings>
+```
+
+#### 3.9.3. SSL/TLS Configuration for Production
+
+**Important:** For production, ORDS should use HTTPS instead of HTTP.
+
+**Option A: Using Self-Signed Certificate (Dev/Test)**
+
+```bash
+# As oracle user
+mkdir -p /opt/oracle/ords/config/ssl
+cd /opt/oracle/ords/config/ssl
+
+# Generate self-signed certificate
+openssl req -x509 -newkey rsa:4096 -keyout key.pem -out cert.pem -days 365 -nodes \
+  -subj "/C=US/ST=State/L=City/O=Organization/CN=<vm-hostname>"
+
+# Set permissions
+chmod 600 key.pem
+chmod 644 cert.pem
+```
+
+**Option B: Using Azure Key Vault Certificate (Production)**
+
+```bash
+# Download certificate from Azure Key Vault
+az keyvault secret download \
+  --vault-name <keyvault-name> \
+  --name ssl-cert \
+  --file /opt/oracle/ords/config/ssl/cert.pem
+
+az keyvault secret download \
+  --vault-name <keyvault-name> \
+  --name ssl-key \
+  --file /opt/oracle/ords/config/ssl/key.pem
+
+# Set permissions
+chown oracle:oinstall /opt/oracle/ords/config/ssl/*.pem
+chmod 600 /opt/oracle/ords/config/ssl/key.pem
+chmod 644 /opt/oracle/ords/config/ssl/cert.pem
+```
+
+**Update settings.xml for HTTPS:**
+
+```xml
+<!-- Add to settings.xml -->
+<setting id="standalone.https.port">443</setting>
+<setting id="standalone.https.cert">/opt/oracle/ords/config/ssl/cert.pem</setting>
+<setting id="standalone.https.cert.key">/opt/oracle/ords/config/ssl/key.pem</setting>
+<setting id="standalone.https.host">0.0.0.0</setting>
+
+<!-- Optional: Redirect HTTP to HTTPS -->
+<setting id="standalone.http.port">8080</setting>
+<setting id="standalone.redirect.http.to.https">true</setting>
+```
+
+**Update firewall rules:**
+
+```bash
+# Open HTTPS port
+sudo firewall-cmd --permanent --add-port=443/tcp
+sudo firewall-cmd --reload
+
+# Update NSG to allow HTTPS traffic (Azure Portal or CLI)
+az network nsg rule create \
+  --resource-group <rg-name> \
+  --nsg-name <nsg-name> \
+  --name Allow-HTTPS-ORDS \
+  --priority 120 \
+  --source-address-prefixes '<siebel-subnet-cidr>' \
+  --destination-port-ranges 443 \
+  --protocol Tcp \
+  --access Allow \
+  --direction Inbound
+```
+
+**Restart ORDS:**
+
+```bash
+sudo systemctl restart ords.service
+
+# Test HTTPS
+curl -k https://localhost:443/ords/
+curl -k https://<vm-private-ip>:443/ords/
+```
+
+#### 3.9.4. ORDS Monitoring and Health Checks
+
+**Create health check endpoint:**
+
+```sql
+-- Connect as SEMANTIC_SEARCH user
+sqlplus SEMANTIC_SEARCH/<password>@localhost:1521/VECSRCH
+
+-- Create health check procedure
+CREATE OR REPLACE PROCEDURE HEALTH_CHECK (
+    p_status OUT VARCHAR2
+) AS
+    v_db_count NUMBER;
+    v_vector_count NUMBER;
+BEGIN
+    -- Check database connectivity
+    SELECT COUNT(*) INTO v_db_count FROM DUAL;
+    
+    -- Check vector table
+    SELECT COUNT(*) INTO v_vector_count 
+    FROM SIEBEL_KNOWLEDGE_VECTORS 
+    WHERE ROWNUM = 1;
+    
+    p_status := JSON_OBJECT(
+        'status' VALUE 'healthy',
+        'timestamp' VALUE SYSTIMESTAMP,
+        'database' VALUE 'connected',
+        'vector_table' VALUE 'accessible'
+    );
+EXCEPTION
+    WHEN OTHERS THEN
+        p_status := JSON_OBJECT(
+            'status' VALUE 'unhealthy',
+            'error' VALUE SQLERRM
+        );
+END;
+/
+
+-- Create ORDS REST endpoint for health check
+BEGIN
+    ORDS.DEFINE_MODULE(
+        p_module_name    => 'health',
+        p_base_path      => 'health/',
+        p_items_per_page => 0
+    );
+    
+    ORDS.DEFINE_TEMPLATE(
+        p_module_name    => 'health',
+        p_pattern        => 'check'
+    );
+    
+    ORDS.DEFINE_HANDLER(
+        p_module_name    => 'health',
+        p_pattern        => 'check',
+        p_method         => 'GET',
+        p_source_type    => ORDS.source_type_plsql,
+        p_source         => 'BEGIN HEALTH_CHECK(:status); END;',
+        p_items_per_page => 0
+    );
+    
+    COMMIT;
+END;
+/
+
+EXIT;
+```
+
+**Test health endpoint:**
+
+```bash
+# Test health check
+curl http://localhost:8080/ords/semantic_search/health/check
+
+# Expected response:
+# {"status":"healthy","timestamp":"2025-10-17T10:30:00Z","database":"connected","vector_table":"accessible"}
+```
+
+**Create monitoring script:**
+
+```bash
+# Create monitoring script
+sudo tee /opt/oracle/ords/monitor_ords.sh > /dev/null << 'EOF'
+#!/bin/bash
+# ORDS Health Monitoring Script
+
+LOG_FILE="/opt/oracle/ords/logs/monitor.log"
+HEALTH_URL="http://localhost:8080/ords/semantic_search/health/check"
+
+# Test ORDS health
+HTTP_STATUS=$(curl -s -o /dev/null -w "%{http_code}" $HEALTH_URL)
+
+if [ "$HTTP_STATUS" -eq 200 ]; then
+    echo "$(date): ORDS is healthy (HTTP $HTTP_STATUS)" >> $LOG_FILE
+    exit 0
+else
+    echo "$(date): ORDS is unhealthy (HTTP $HTTP_STATUS)" >> $LOG_FILE
+    # Optional: Send alert or restart service
+    # systemctl restart ords.service
+    exit 1
+fi
+EOF
+
+chmod +x /opt/oracle/ords/monitor_ords.sh
+
+# Add to crontab for periodic checks (every 5 minutes)
+(crontab -l 2>/dev/null; echo "*/5 * * * * /opt/oracle/ords/monitor_ords.sh") | crontab -
+```
+
+#### 3.9.5. ORDS Logging Configuration
+
+**Configure detailed logging for troubleshooting:**
+
+```bash
+# Create log configuration file
+cat > /opt/oracle/ords/config/global/logging.properties << 'EOF'
+# ORDS Logging Configuration
+
+# Root logger
+.level=INFO
+.handlers=java.util.logging.FileHandler,java.util.logging.ConsoleHandler
+
+# File handler
+java.util.logging.FileHandler.pattern=/opt/oracle/ords/logs/ords_%u_%g.log
+java.util.logging.FileHandler.limit=10485760
+java.util.logging.FileHandler.count=10
+java.util.logging.FileHandler.formatter=java.util.logging.SimpleFormatter
+java.util.logging.SimpleFormatter.format=%1$tF %1$tT %4$s %2$s %5$s%6$s%n
+
+# Console handler (for systemd journal)
+java.util.logging.ConsoleHandler.level=INFO
+java.util.logging.ConsoleHandler.formatter=java.util.logging.SimpleFormatter
+
+# ORDS specific loggers
+oracle.dbtools.level=INFO
+oracle.dbtools.rt.web.level=INFO
+oracle.dbtools.rt.resource.level=INFO
+
+# Set to FINE for detailed debugging (disable in production)
+# oracle.dbtools.level=FINE
+EOF
+
+# Update systemd service to use logging configuration
+sudo vi /etc/systemd/system/ords.service
+```
+
+**Add to ExecStart:**
+
+```ini
+ExecStart=/opt/oracle/ords/bin/ords --config /opt/oracle/ords/config serve --log /opt/oracle/ords/logs/ords.log
+```
+
+**Reload and restart:**
+
+```bash
+sudo systemctl daemon-reload
+sudo systemctl restart ords.service
+```
+
+**Log rotation setup:**
+
+```bash
+# Create logrotate configuration
+sudo tee /etc/logrotate.d/ords > /dev/null << 'EOF'
+/opt/oracle/ords/logs/*.log {
+    daily
+    rotate 30
+    compress
+    delaycompress
+    missingok
+    notifempty
+    create 0644 oracle oinstall
+    sharedscripts
+    postrotate
+        systemctl reload ords.service > /dev/null 2>&1 || true
+    endscript
+}
+EOF
+```
+
+#### 3.9.6. ORDS Performance Metrics
+
+**Enable performance monitoring:**
+
+```sql
+-- Connect as SEMANTIC_SEARCH user
+sqlplus SEMANTIC_SEARCH/<password>@localhost:1521/VECSRCH
+
+-- Create performance metrics table
+CREATE TABLE ORDS_METRICS (
+    metric_id NUMBER GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+    metric_timestamp TIMESTAMP DEFAULT SYSTIMESTAMP,
+    endpoint VARCHAR2(500),
+    response_time_ms NUMBER,
+    status_code NUMBER,
+    error_message VARCHAR2(4000)
+);
+
+-- Create index for performance
+CREATE INDEX idx_metrics_timestamp ON ORDS_METRICS(metric_timestamp);
+
+-- Create procedure to log metrics
+CREATE OR REPLACE PROCEDURE LOG_ORDS_METRIC (
+    p_endpoint IN VARCHAR2,
+    p_response_time IN NUMBER,
+    p_status_code IN NUMBER DEFAULT 200,
+    p_error_message IN VARCHAR2 DEFAULT NULL
+) AS
+PRAGMA AUTONOMOUS_TRANSACTION;
+BEGIN
+    INSERT INTO ORDS_METRICS (endpoint, response_time_ms, status_code, error_message)
+    VALUES (p_endpoint, p_response_time, p_status_code, p_error_message);
+    COMMIT;
+END;
+/
+
+EXIT;
+```
+
+**View performance metrics:**
+
+```sql
+-- Average response time by endpoint (last 24 hours)
+SELECT 
+    endpoint,
+    COUNT(*) AS request_count,
+    ROUND(AVG(response_time_ms), 2) AS avg_response_time_ms,
+    ROUND(MIN(response_time_ms), 2) AS min_response_time_ms,
+    ROUND(MAX(response_time_ms), 2) AS max_response_time_ms,
+    ROUND(PERCENTILE_CONT(0.95) WITHIN GROUP (ORDER BY response_time_ms), 2) AS p95_response_time_ms
+FROM ORDS_METRICS
+WHERE metric_timestamp >= SYSTIMESTAMP - INTERVAL '24' HOUR
+GROUP BY endpoint
+ORDER BY avg_response_time_ms DESC;
+
+-- Error rate (last hour)
+SELECT 
+    status_code,
+    COUNT(*) AS error_count,
+    ROUND(COUNT(*) * 100.0 / SUM(COUNT(*)) OVER (), 2) AS percentage
+FROM ORDS_METRICS
+WHERE metric_timestamp >= SYSTIMESTAMP - INTERVAL '1' HOUR
+GROUP BY status_code
+ORDER BY error_count DESC;
 ```
 
 ---

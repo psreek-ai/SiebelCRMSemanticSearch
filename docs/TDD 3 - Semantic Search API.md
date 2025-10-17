@@ -19,7 +19,7 @@ This document specifies the design and implementation of the RESTful API that pr
 Before implementing this TDD, ensure:
 - ✅ TDD 1 is complete (data extraction from Oracle 19c Siebel database)
 - ✅ TDD 2 is complete (vector generation via Azure AI Foundry and indexing)
-- ✅ Oracle 23ai Database is installed and running on Azure VM
+- ✅ Oracle Database 23ai on Azure VM is installed and running
 - ✅ **ORDS is installed and configured** (completed in Deployment Guide Phase 3)
 - ✅ SEMANTIC_SEARCH schema is enabled for REST services
 
@@ -32,7 +32,7 @@ Before implementing this TDD, ensure:
 **Executor:** Database Administrator  
 **Duration:** 10 minutes
 
-**Important:** Unlike Oracle 23ai Database, Oracle 23ai on Azure VM requires manual ORDS installation (completed in Deployment Guide Phase 3). Verify it's properly configured before proceeding.
+**Important:** Oracle Database 23ai on Azure VM requires manual ORDS installation (completed in Deployment Guide Phase 3). Verify it's properly configured before proceeding.
 
 #### 1.1. Verify ORDS Service Status
 
@@ -159,7 +159,7 @@ FROM user_ords_schemas;
 #### 2.2. Test Schema Accessibility
 
 ```bash
-# Test the schema endpoint using the Oracle 23ai Database ORDS URL
+# Test the schema endpoint using the Oracle 23ai ORDS URL
 curl http://localhost:8080/ords/semantic_search/
 
 # Expected: 404 or empty JSON response (no modules defined yet - this is normal)
@@ -183,16 +183,16 @@ CREATE OR REPLACE PROCEDURE GET_SEMANTIC_RECOMMENDATIONS (
     p_result_json   OUT CLOB
 ) AS
     -- Variables for query vector generation
-    l_query_vector      VECTOR(1024, FLOAT64);
-    l_oci_response      CLOB;
-    l_oci_req_body      CLOB;
+    l_query_vector      VECTOR(1536, FLOAT32);
+    l_api_response      CLOB;
+    l_api_req_body      CLOB;
     l_embedding_url     VARCHAR2(512);
     l_search_id         VARCHAR2(64);
     
-    -- Configuration variables (customize for your environment)
-    l_compartment_id    VARCHAR2(200) := 'ocid1.compartment.oc1..aaaaaaaa...your_compartment_ocid';
-    l_region            VARCHAR2(50) := 'us-ashburn-1';
-    l_model_id          VARCHAR2(100) := 'cohere.embed-english-v3.0';
+    -- Configuration variables for Azure AI Foundry (customize for your environment)
+    l_workspace_endpoint VARCHAR2(500) := 'https://<workspace-name>.<region>.api.azureml.ms';
+    l_deployment_name    VARCHAR2(100) := 'text-embedding-3-small';
+    l_api_version        VARCHAR2(50) := '2024-02-15-preview';
     
     -- Exception handling
     l_error_message     VARCHAR2(4000);
@@ -210,10 +210,10 @@ BEGIN
         RETURN;
     END IF;
     
-    -- Build embedding service URL
-    l_embedding_url := 'https://inference.generativeai.' || l_region || '.oci.oraclecloud.com/20231130/actions/embedText';
+    -- Build Azure AI Foundry with OpenAI Service embedding URL
+    l_embedding_url := l_workspace_endpoint || '/openai/deployments/' || l_deployment_name || '/embeddings?api-version=' || l_api_version;
     
-    -- Step 1: Generate vector for the user query
+    -- Step 1: Generate vector for the user query using Azure AI Foundry with OpenAI Service
     BEGIN
         -- Clean the query text
         DECLARE
@@ -221,23 +221,22 @@ BEGIN
         BEGIN
             l_clean_query := CLEAN_TEXT_FOR_EMBEDDING(p_query_text);
             
-            -- Build API request body
+            -- Build API request body for Azure AI Foundry
             SELECT JSON_OBJECT(
-                'servingMode' VALUE JSON_OBJECT('servingType' VALUE 'ON_DEMAND'),
-                'compartmentId' VALUE l_compartment_id,
-                'inputs' VALUE JSON_ARRAY(l_clean_query)
-            ) INTO l_oci_req_body FROM DUAL;
+                'input' VALUE l_clean_query,
+                'model' VALUE l_deployment_name
+            ) INTO l_api_req_body FROM DUAL;
             
-            -- Call Azure AI Foundry service
-            l_oci_response := DBMS_CLOUD.SEND_REQUEST(
-                credential_name => 'OCI_GENAI_CREDENTIAL',
+            -- Call Azure AI Foundry OpenAI service
+            l_api_response := DBMS_CLOUD.SEND_REQUEST(
+                credential_name => 'AZURE_AI_FOUNDRY_CRED',
                 uri             => l_embedding_url,
                 method          => 'POST',
-                body            => UTL_RAW.CAST_TO_RAW(l_oci_req_body)
+                body            => UTL_RAW.CAST_TO_RAW(l_api_req_body)
             );
             
-            -- Extract the vector from the JSON response
-            SELECT JSON_VALUE(l_oci_response, '$.embeddings[0]' RETURNING VECTOR(1024, FLOAT64))
+            -- Extract the vector from the Azure OpenAI JSON response
+            SELECT JSON_VALUE(l_api_response, '$.data[0].embedding' RETURNING VECTOR(1536, FLOAT32))
             INTO l_query_vector
             FROM DUAL;
         END;
@@ -485,7 +484,7 @@ WHERE template_id = (
 #### 5.1. Test with curl
 
 ```bash
-# Test the API endpoint using Oracle 23ai Database ORDS URL
+# Test the API endpoint using Oracle 23ai ORDS URL
 curl -X POST \
   -H "Content-Type: text/plain" \
   -H "Top-K: 5" \

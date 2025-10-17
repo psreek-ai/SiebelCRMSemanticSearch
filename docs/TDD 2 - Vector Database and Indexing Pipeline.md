@@ -35,12 +35,12 @@ Create HNSW Vector Index (after all embeddings complete)
 
 ## 3. Implementation Steps
 
-### Step 1: Configure Azure AI Foundry Credentials in Oracle 23ai
+### Step 1: Configure Azure AI Foundry with OpenAI Service Credentials in Oracle 23ai
 
 **Executor:** Database Administrator on Oracle 23ai VM  
 **Duration:** 30 minutes
 
-#### 1.1. Obtain Azure AI Foundry API Credentials
+#### 1.1. Obtain Azure AI Foundry with OpenAI Service API Credentials
 
 Before proceeding, gather the following from Azure Portal:
 
@@ -207,25 +207,30 @@ EXIT;
 - **HTTP 401 Unauthorized**: Check API key is correct
 - **HTTP 404 Not Found**: Verify API endpoint URL and deployment name
 - **Timeout errors**: Check network latency to Azure region, consider increasing timeout
+
+**Test Script:**
+```sql
+-- Test Azure AI Foundry connectivity
+SET SERVEROUTPUT ON SIZE UNLIMITED;
 DECLARE
   l_response CLOB;
   l_request_body CLOB;
+  l_api_endpoint VARCHAR2(500) := 'https://<workspace-name>.<region>.api.azureml.ms/openai/deployments/text-embedding-3-small/embeddings?api-version=2024-02-15-preview';
 BEGIN
   l_request_body := '{
-    "servingMode": {"servingType": "ON_DEMAND"},
-    "compartmentId": "ocid1.compartment.oc1..aaaaaaaa...your_compartment_ocid",
-    "inputs": ["Test connection"]
+    "input": ["Test connection"],
+    "model": "text-embedding-3-small"
   }';
   
   l_response := DBMS_CLOUD.SEND_REQUEST(
-    credential_name => 'OCI_GENAI_CREDENTIAL',
-    uri => 'https://inference.generativeai.us-ashburn-1.oci.oraclecloud.com/20231130/actions/embedText',
+    credential_name => 'AZURE_AI_FOUNDRY_CRED',
+    uri => l_api_endpoint,
     method => 'POST',
     body => UTL_RAW.CAST_TO_RAW(l_request_body)
   );
   
   DBMS_OUTPUT.PUT_LINE('Response: ' || SUBSTR(l_response, 1, 200));
-  DBMS_OUTPUT.PUT_LINE('SUCCESS: OCI API is accessible');
+  DBMS_OUTPUT.PUT_LINE('SUCCESS: Azure AI Foundry API is accessible');
 EXCEPTION
   WHEN OTHERS THEN
     DBMS_OUTPUT.PUT_LINE('ERROR: ' || SQLERRM);
@@ -235,16 +240,16 @@ END;
 ```
 
 **Troubleshooting:**
-- **ORA-20000**: Invalid credentials → Check OCID values and fingerprint
-- **Network timeout**: Verify Network ACL is configured (from TDD 1)
-- **401 Unauthorized**: Check private key format and fingerprint
-- **404 Not Found**: Verify region in the URI matches your OCI region
+- **ORA-20000**: Invalid credentials → Check API key
+- **Network timeout**: Verify Network ACL is configured
+- **401 Unauthorized**: Check API key is valid and not expired
+- **404 Not Found**: Verify workspace name, region, and deployment name in URI
 
 ---
 
 ### Step 2: Create Vector Table
 
-**Executor:** Database Administrator on Oracle Oracle 23ai Database  
+**Executor:** Database Administrator on Oracle 23ai  
 **Duration:** 5 minutes
 
 #### 2.1. Create the Vector Table DDL
@@ -256,8 +261,8 @@ CREATE TABLE SIEBEL_KNOWLEDGE_VECTORS (
     CATALOG_ITEM_ID         VARCHAR2(15) NOT NULL,
     CATALOG_PATH            VARCHAR2(4000),
     FULL_NARRATIVE          CLOB,
-    NARRATIVE_VECTOR        VECTOR(1536, FLOAT64), -- OpenAI text-embedding-3-small uses 1536 dimensions
-    EMBEDDING_MODEL         VARCHAR2(100) DEFAULT 'cohere.embed-english-v3.0',
+    NARRATIVE_VECTOR        VECTOR(1536, FLOAT32), -- Azure OpenAI text-embedding-3-small uses 1536 dimensions with FLOAT32
+    EMBEDDING_MODEL         VARCHAR2(100) DEFAULT 'text-embedding-3-small',
     CREATED_DATE            DATE DEFAULT SYSDATE,
     LAST_UPDATED            DATE DEFAULT SYSDATE
 );
@@ -270,7 +275,7 @@ COMMENT ON COLUMN SIEBEL_KNOWLEDGE_VECTORS.SR_ID IS 'Primary key from SIEBEL.S_S
 COMMENT ON COLUMN SIEBEL_KNOWLEDGE_VECTORS.CATALOG_ITEM_ID IS 'Foreign key to the S_PROD_INT table for the final catalog item';
 COMMENT ON COLUMN SIEBEL_KNOWLEDGE_VECTORS.CATALOG_PATH IS 'Full human-readable path of the catalog item';
 COMMENT ON COLUMN SIEBEL_KNOWLEDGE_VECTORS.FULL_NARRATIVE IS 'The complete aggregated text used to generate the vector';
-COMMENT ON COLUMN SIEBEL_KNOWLEDGE_VECTORS.NARRATIVE_VECTOR IS 'The numerical vector representation of the narrative (1536 dimensions)';
+COMMENT ON COLUMN SIEBEL_KNOWLEDGE_VECTORS.NARRATIVE_VECTOR IS 'The numerical vector representation of the narrative (1536 dimensions, FLOAT32)';
 
 -- Verify table creation
 DESC SIEBEL_KNOWLEDGE_VECTORS;
@@ -305,9 +310,9 @@ BEGIN
     l_clean_text := REGEXP_REPLACE(l_clean_text, '\s+', ' ');
     l_clean_text := TRIM(l_clean_text);
     
-    -- Truncate to 5000 characters if too long (OCI API limit consideration)
-    IF LENGTH(l_clean_text) > 5000 THEN
-        l_clean_text := SUBSTR(l_clean_text, 1, 5000);
+    -- Truncate to 8000 characters if too long (Azure OpenAI recommended limit for text-embedding-3-small)
+    IF LENGTH(l_clean_text) > 8000 THEN
+        l_clean_text := SUBSTR(l_clean_text, 1, 8000);
     END IF;
     
     RETURN l_clean_text;
@@ -319,15 +324,15 @@ END CLEAN_TEXT_FOR_EMBEDDING;
 ```sql
 CREATE OR REPLACE PROCEDURE GENERATE_EMBEDDINGS_BATCH(
     p_batch_size IN NUMBER DEFAULT 10,
-    p_compartment_id IN VARCHAR2 DEFAULT 'ocid1.compartment.oc1..aaaaaaaa...your_compartment_ocid',
-    p_region IN VARCHAR2 DEFAULT 'us-ashburn-1'
+    p_workspace_endpoint IN VARCHAR2 DEFAULT 'https://<workspace-name>.<region>.api.azureml.ms',
+    p_deployment_name IN VARCHAR2 DEFAULT 'text-embedding-3-small'
 ) AS
     -- Variables for API call
     l_api_url VARCHAR2(500);
     l_request_body CLOB;
     l_response CLOB;
     l_vector_json CLOB;
-    l_vector VECTOR(1536, FLOAT64);
+    l_vector VECTOR(1536, FLOAT32);
     
     -- Counters
     v_processed_count NUMBER := 0;
@@ -350,8 +355,8 @@ CREATE OR REPLACE PROCEDURE GENERATE_EMBEDDINGS_BATCH(
         FOR UPDATE SKIP LOCKED; -- Prevent concurrent processing conflicts
         
 BEGIN
-    -- Set API URL based on region
-    l_api_url := 'https://inference.generativeai.' || p_region || '.oci.oraclecloud.com/20231130/actions/embedText';
+    -- Set API URL for Azure AI Foundry OpenAI endpoint
+    l_api_url := p_workspace_endpoint || '/openai/deployments/' || p_deployment_name || '/embeddings?api-version=2024-02-15-preview';
     
     -- Get count of pending records
     SELECT COUNT(*) INTO v_total_pending
@@ -361,6 +366,7 @@ BEGIN
     DBMS_OUTPUT.PUT_LINE('Starting batch processing...');
     DBMS_OUTPUT.PUT_LINE('Total pending records: ' || v_total_pending);
     DBMS_OUTPUT.PUT_LINE('Batch size: ' || p_batch_size);
+    DBMS_OUTPUT.PUT_LINE('Azure AI Foundry endpoint: ' || l_api_url);
     DBMS_OUTPUT.PUT_LINE('-----------------------------------');
     
     -- Process each record
@@ -372,23 +378,22 @@ BEGIN
             BEGIN
                 l_clean_text := CLEAN_TEXT_FOR_EMBEDDING(rec.FULL_NARRATIVE);
                 
-                -- Build API request body
+                -- Build API request body for Azure OpenAI
                 SELECT JSON_OBJECT(
-                    'servingMode' VALUE JSON_OBJECT('servingType' VALUE 'ON_DEMAND'),
-                    'compartmentId' VALUE p_compartment_id,
-                    'inputs' VALUE JSON_ARRAY(l_clean_text)
+                    'input' VALUE l_clean_text,
+                    'model' VALUE p_deployment_name
                 ) INTO l_request_body FROM DUAL;
                 
-                -- Call Azure AI Foundry service
+                -- Call Azure AI Foundry OpenAI service
                 l_response := DBMS_CLOUD.SEND_REQUEST(
-                    credential_name => 'OCI_GENAI_CREDENTIAL',
+                    credential_name => 'AZURE_AI_FOUNDRY_CRED',
                     uri => l_api_url,
                     method => 'POST',
                     body => UTL_RAW.CAST_TO_RAW(l_request_body)
                 );
                 
-                -- Parse the response to extract the vector
-                SELECT JSON_VALUE(l_response, '$.embeddings[0]' RETURNING VECTOR(1536, FLOAT64))
+                -- Parse the Azure OpenAI response to extract the vector
+                SELECT JSON_VALUE(l_response, '$.data[0].embedding' RETURNING VECTOR(1536, FLOAT32))
                 INTO l_vector
                 FROM DUAL;
                 
@@ -410,8 +415,8 @@ BEGIN
                         kv.CATALOG_PATH = src.CATALOG_PATH,
                         kv.LAST_UPDATED = SYSDATE
                 WHEN NOT MATCHED THEN
-                    INSERT (SR_ID, CATALOG_ITEM_ID, CATALOG_PATH, FULL_NARRATIVE, NARRATIVE_VECTOR)
-                    VALUES (src.SR_ID, src.CATALOG_ITEM_ID, src.CATALOG_PATH, src.FULL_NARRATIVE, src.NARRATIVE_VECTOR);
+                    INSERT (SR_ID, CATALOG_ITEM_ID, CATALOG_PATH, FULL_NARRATIVE, NARRATIVE_VECTOR, EMBEDDING_MODEL)
+                    VALUES (src.SR_ID, src.CATALOG_ITEM_ID, src.CATALOG_PATH, src.FULL_NARRATIVE, src.NARRATIVE_VECTOR, p_deployment_name);
                 
                 -- Mark as processed in staging table
                 UPDATE SIEBEL_NARRATIVES_STAGING
@@ -502,7 +507,7 @@ WHERE ROWNUM <= 3;
 
 ### Step 4: Process All Narratives in Batches
 
-**Executor:** Database Administrator on Oracle Oracle 23ai Database  
+**Executor:** Database Administrator on Oracle 23ai  
 **Duration:** Several hours (depending on data volume)
 
 #### 4.1. Create Processing Loop Script
@@ -525,14 +530,14 @@ BEGIN
         DBMS_OUTPUT.PUT_LINE('=== Iteration ' || v_iteration || ' ===');
         DBMS_OUTPUT.PUT_LINE('Remaining: ' || v_remaining);
         
-        -- Process batch
+        -- Process batch using Azure AI Foundry
         GENERATE_EMBEDDINGS_BATCH(
             p_batch_size => v_batch_size,
-            p_compartment_id => 'ocid1.compartment.oc1..aaaaaaaa...your_compartment_ocid',
-            p_region => 'us-ashburn-1'
+            p_workspace_endpoint => 'https://<workspace-name>.<region>.api.azureml.ms',
+            p_deployment_name => 'text-embedding-3-small'
         );
         
-        -- Small delay between batches
+        -- Small delay between batches to avoid rate limiting
         DBMS_SESSION.SLEEP(2); -- 2 second pause
         
     END LOOP;
@@ -586,7 +591,7 @@ WHERE job_name = 'DAILY_EMBEDDING_GENERATION';
 
 ### Step 5: Create Vector Index
 
-**Executor:** Database Administrator on Oracle Oracle 23ai Database  
+**Executor:** Database Administrator on Oracle 23ai  
 **Duration:** 30-60 minutes (depending on data volume)
 
 #### 5.1. Create HNSW Vector Index

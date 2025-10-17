@@ -180,12 +180,12 @@ BEGIN
             -- Wait 60 seconds before half-open
             IF SYSTIMESTAMP - v_opened_at < INTERVAL '60' SECOND THEN
                 RAISE_APPLICATION_ERROR(-20001, 
-                    'Circuit breaker OPEN: OCI service unavailable');
+                    'Circuit breaker OPEN: Azure AI Foundry service unavailable');
             ELSE
                 -- Transition to HALF_OPEN
-                UPDATE OCI_CIRCUIT_BREAKER
+                UPDATE AZURE_AI_CIRCUIT_BREAKER
                 SET state = 'HALF_OPEN'
-                WHERE service_name = 'OCI_EMBEDDING';
+                WHERE service_name = 'AZURE_AI_EMBEDDING';
                 COMMIT;
             END IF;
         END;
@@ -196,9 +196,9 @@ BEGIN
         -- Set timeout using UTL_HTTP timeout parameters
         v_response := DBMS_CLOUD.SEND_REQUEST(
             credential_name => 'AZURE_AI_FOUNDRY_CRED',
-            uri => 'https://<workspace-name>.<region>.api.azureml.ms/openai/deployments/text-embedding-3-small/embeddings?api-version=2024-02-01',
+            uri => 'https://<workspace-name>.<region>.api.azureml.ms/openai/deployments/text-embedding-3-small/embeddings?api-version=2024-02-15-preview',
             method => 'POST',
-            body => UTL_RAW.CAST_TO_RAW('{"input":"' || p_text || '"}')
+            body => UTL_RAW.CAST_TO_RAW('{"input":"' || p_text || '", "model": "text-embedding-3-small"}')
             -- Note: Add timeout configuration
         );
         

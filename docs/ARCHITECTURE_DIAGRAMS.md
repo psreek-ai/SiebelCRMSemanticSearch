@@ -369,7 +369,7 @@ sequenceDiagram
     autonumber
     participant CRON as Scheduler<br/>(Nightly Job)
     participant ETL as ETL Process<br/>(PL/SQL)
-    participant SIEBEL as Siebel DB<br/>(Oracle 19c)
+    participant SIEBEL as Oracle 19c<br/>(Siebel database)
     participant STAGE as Staging Table
     participant AI as Azure AI Foundry<br/>(OpenAI)
     participant VDB as Vector Index

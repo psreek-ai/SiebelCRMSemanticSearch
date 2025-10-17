@@ -451,7 +451,7 @@ Break the monolithic ORDS API into specialized microservices, but **keep Oracle 
      └──────────────┴────────────┴───────────┴─────────┘
                                   │
                     ┌─────────────┴────────────────┐
-                    │  Oracle Oracle 23ai        │
+                    │  Oracle 23ai        │
                     │  (Universal Data Platform)   │
                     │                              │
                     │  ┌────────────────────────┐  │
@@ -522,7 +522,7 @@ Oracle 23ai Database becomes the agent's **memory and knowledge retrieval system
                      │
                      ↓
         ┌────────────────────────────┐
-        │  Oracle Oracle 23ai     │
+        │  Oracle 23ai     │
         │  (Agent Memory & Tools)   │
         │                           │
         │  Tool: vector_search()    │

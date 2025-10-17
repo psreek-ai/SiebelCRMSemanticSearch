@@ -155,7 +155,7 @@ sequenceDiagram
 
 | Component | Technology Stack | Responsibility |
 | :--- | :--- | :--- |
-| **Data Source** | Oracle 19c (Siebel DB) | The existing system of record containing all historical CRM data. |
+| **Data Source** | Oracle 19c (Siebel database) | The existing system of record containing all historical CRM data. |
 | **Data Extraction Pipeline** | Database Links, SQL | Extracts, aggregates, and prepares historical data for indexing using direct database-to-database connectivity. Runs as a batch process. |
 | **Vector Database** | Oracle Database 23ai on Azure VM | Stores the text narratives and their corresponding vector embeddings. Hosts the high-performance HNSW vector index and the API logic. Self-managed database provides full control over configuration, tuning, and resource allocation. |
 | **Embedding Service**| Azure AI Foundry with OpenAI Service (text-embedding-3-small or text-embedding-3-large) | Azure's unified AI development platform that provides managed OpenAI models. Converts text narratives and user queries into numerical vectors (1536 or 3072 dimensions). Accessed from the database via DBMS_CLOUD with Azure Private Endpoint connectivity. Includes prompt flow, evaluation tools, and responsible AI governance. |
