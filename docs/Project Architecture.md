@@ -1,8 +1,8 @@
 # Project Architecture Guide: AI-Powered Semantic Search for Siebel CRM
 
-**Version:** 2.1 (ORDS Edition)
-**Date:** 2025-10-16
-**Author:** AI Assistant
+**Version:** 2.2
+**Date:** 2025-10-17
+**Author:** Development Team
 
 ## 1. Introduction
 
@@ -23,12 +23,12 @@ The solution is designed with a simplified, highly performant architecture that 
 | Component | Technology Stack | Responsibility |
 | :--- | :--- | :--- |
 | **Data Source** | Oracle 12c (Siebel DB) | The existing system of record containing all historical CRM data. |
-| **Data Extraction Pipeline** | SQL, Python (Optional) | Extracts, aggregates, and prepares historical data for indexing. Runs as a batch process. |
-| **Vector Database** | Oracle Database 23ai | Stores the text narratives and their corresponding vector embeddings. Hosts the high-performance vector index and the API logic. |
-| **Embedding Service**| OCI Generative AI Service | A managed cloud service that converts text narratives and user queries into numerical vectors (embeddings), called from within the database. |
-| **Semantic Search API** | **Oracle REST Data Services (ORDS) & PL/SQL** | A high-performance RESTful API hosted directly by the Oracle database. The PL/SQL procedure encapsulates all AI search logic. |
-| **Siebel CRM** | Siebel Open UI, eScript | The user-facing application. Modified to call the ORDS endpoint and display the intelligent recommendations. |
-| **Standalone Test App**| Streamlit / HTML+JS | A simple web application for testing and demonstrating the API's search capabilities independently of Siebel. |
+| **Data Extraction Pipeline** | Database Links, SQL | Extracts, aggregates, and prepares historical data for indexing using direct database-to-database connectivity. Runs as a batch process. |
+| **Vector Database** | Oracle Database 23ai | Stores the text narratives and their corresponding vector embeddings. Hosts the high-performance HNSW vector index and the API logic. |
+| **Embedding Service**| OCI Generative AI Service (Cohere Embed v3.0) | A managed cloud service that converts text narratives and user queries into numerical vectors (1024 dimensions), called from within the database via DBMS_CLOUD. |
+| **Semantic Search API** | **Oracle REST Data Services (ORDS) & PL/SQL** | A high-performance RESTful API hosted directly by the Oracle database. The PL/SQL procedure encapsulates all AI search logic including vector similarity search and catalog aggregation. |
+| **Siebel CRM** | Siebel Open UI, eScript, Custom Presentation Models | The user-facing application. Modified to call the ORDS endpoint via Named Subsystem and Business Service, displaying intelligent recommendations in the catalog search interface. |
+| **Standalone Test App** | Python, Streamlit, Plotly | A web application for testing and demonstrating the semantic search API independently of Siebel. Provides side-by-side view of matching SRs and recommended catalog paths with analytics. See [TDD 5](TDD%205%20-%20Standalone%20Test%20Application.md) for complete specifications. |
 
 ### 2.2. Technology Stack Rationale
 
@@ -71,3 +71,154 @@ The solution is designed with a simplified, highly performant architecture that 
 1.  **Network:** The Oracle 23ai database and its ORDS listener will reside within a private Virtual Cloud Network (VCN). An OCI Load Balancer or API Gateway will be the only public-facing entry point, terminating TLS. Network Security Groups (NSGs) will restrict traffic to the database listener port.
 2.  **Authentication:** Siebel will authenticate to the ORDS endpoint via the Load Balancer or API Gateway (e.g., using a mandatory API Key). The ORDS endpoint itself can be further secured using ORDS-native privileges or OAuth2.
 3.  **Callout Security:** The PL/SQL procedure's callout to the OCI Embedding Service is secured using a `DBMS_CLOUD` credential, which stores OCI API keys encrypted within the database, eliminating the need for external credential files or vaults for the API layer.
+
+## 6. Standalone Test Application
+
+### 6.1. Purpose and Benefits
+
+The Standalone Test Application is a Python-based web application built with Streamlit that provides an independent testing and demonstration platform for the semantic search functionality. This application is essential for:
+
+- **Pre-Siebel Testing**: Validate search functionality before full Siebel integration
+- **Rapid Development**: Test API changes without redeploying Siebel components
+- **QA Validation**: Execute systematic test cases with golden set queries
+- **Stakeholder Demos**: Showcase semantic search capabilities to business users
+- **Performance Analysis**: Measure and visualize response times and search patterns
+- **Training**: Help users understand semantic search behavior
+
+### 6.2. Key Features
+
+The test application provides a rich user interface with the following capabilities:
+
+**Search Interface**:
+- Natural language query input with configurable Top-K parameter
+- Real-time search execution with response time display
+- Search history with replay functionality
+- Batch query testing from CSV files
+
+**Results Visualization**:
+- **Left Panel**: Matching service requests with similarity scores, narratives, and catalog paths
+- **Right Panel**: Recommended catalog paths with frequency counts and percentages
+- Interactive expandable sections for detailed information
+- Visual progress bars for similarity scores and recommendation percentages
+
+**Analytics Dashboard**:
+- Similarity score distribution histogram
+- Catalog path frequency bar chart
+- Response time trend analysis over search history
+- Aggregate statistics (average similarity, median, standard deviation)
+
+**Export Capabilities**:
+- Export results to CSV for spreadsheet analysis
+- Export results to JSON for programmatic processing
+- Export search history with timestamps
+- Download golden set test results
+
+### 6.3. Architecture
+
+```
+┌─────────────────────────────────────────────────────────────┐
+│                    Streamlit Web UI                          │
+│  ┌────────────┐  ┌──────────────┐  ┌────────────────────┐  │
+│  │Search Panel│  │Results Panel │  │Analytics Dashboard │  │
+│  └────────────┘  └──────────────┘  └────────────────────┘  │
+└────────────────────────┬────────────────────────────────────┘
+                         │
+                         ▼
+┌─────────────────────────────────────────────────────────────┐
+│              Python Application Logic                        │
+│  ┌──────────────┐  ┌──────────────┐  ┌─────────────────┐  │
+│  │ORDS API      │  │Data Processor│  │Cache Manager    │  │
+│  │Client        │  │              │  │                 │  │
+│  └──────────────┘  └──────────────┘  └─────────────────┘  │
+└─────────────────────────┬───────────────────────────────────┘
+                          │
+          ┌───────────────┴───────────────┐
+          ▼                               ▼
+┌─────────────────────┐         ┌──────────────────────┐
+│  ORDS REST API      │         │  Oracle 23ai DB      │
+│  (Primary Mode)     │         │  (Optional Direct)   │
+└─────────────────────┘         └──────────────────────┘
+```
+
+### 6.4. Technology Stack
+
+| Technology | Version | Purpose |
+|-----------|---------|---------|
+| Streamlit | 1.28+ | Web application framework for rapid UI development |
+| requests | 2.31+ | HTTP client for ORDS REST API communication |
+| pandas | 2.1+ | Data manipulation and analysis |
+| plotly | 5.18+ | Interactive visualizations and charts |
+| oracledb | 1.4+ | Optional direct database connectivity |
+| python-dotenv | 1.0+ | Environment variable management |
+
+### 6.5. Usage Scenarios
+
+**Scenario 1: Developer Testing**
+- Developers use the test app to validate new embedding models or algorithm changes
+- Execute standard test queries and compare results with baseline
+- Export results for detailed analysis in spreadsheets
+
+**Scenario 2: QA Validation**
+- QA loads golden set test queries from CSV file
+- Executes batch testing to validate search relevance
+- Calculates Precision@3 metric automatically
+- Exports results for test report generation
+
+**Scenario 3: Business Demonstration**
+- Product owners demonstrate semantic search to stakeholders
+- Use realistic business queries to show relevance
+- Display analytics dashboard showing performance metrics
+- Compare "before and after" scenarios
+
+**Scenario 4: Performance Testing**
+- Performance testers execute series of searches with timestamps
+- Analytics panel shows response time trends
+- Identify slow queries and performance bottlenecks
+- Export timing data for performance reports
+
+### 6.6. Configuration
+
+The test application is configured via environment variables in a `.env` file:
+
+```ini
+# API Configuration
+ORDS_BASE_URL=http://localhost:8080/ords
+API_KEY=your_secure_api_key
+
+# Application Settings
+DEFAULT_TOP_K=5
+CACHE_ENABLED=true
+ENABLE_DATABASE_MODE=false  # Set to true for direct DB queries
+LOG_LEVEL=INFO
+```
+
+### 6.7. Deployment Options
+
+**Local Development**:
+```bash
+streamlit run app.py --server.port 8501
+```
+
+**Docker Deployment**:
+```bash
+docker build -t semantic-search-test-app .
+docker run -p 8501:8501 --env-file .env semantic-search-test-app
+```
+
+**Cloud Deployment**:
+- Deploy to Streamlit Cloud with one-click deployment
+- Configure secrets via Streamlit Cloud interface
+- Accessible via public URL for remote testing
+
+### 6.8. Documentation
+
+Complete technical specifications for the Standalone Test Application are available in [TDD 5: Standalone Test Application](TDD%205%20-%20Standalone%20Test%20Application.md), including:
+
+- Detailed component specifications
+- API client implementation
+- UI component designs
+- Error handling strategies
+- Security considerations
+- Troubleshooting guide
+- Future enhancements
+
