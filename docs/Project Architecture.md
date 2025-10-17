@@ -211,7 +211,7 @@ The test application is configured via environment variables in a `.env` file:
 
 ```ini
 # API Configuration
-ORDS_BASE_URL=http://localhost:8080/ords
+ORDS_BASE_URL=https://<unique_id>-<db_name>.adb.<region>.oraclecloudapps.com/ords
 API_KEY=your_secure_api_key
 
 # Application Settings

@@ -694,12 +694,12 @@ WHERE ROWNUM <= 3;
 
 | Issue | Possible Cause | Solution |
 |-------|---------------|----------|
-| Database link test fails | Network/firewall issue | Check firewall rules, verify listener is running |
-| ORA-12154 TNS error | tnsnames.ora not configured | Add TNS entry as shown in Step 1.2 |
-| Very slow data copy | Large data volume, no indexes | Use APPEND hint, consider parallel processing |
+| Database link test fails | Network/firewall issue | Check VNet peering, NSG rules, verify Oracle 12c listener is running |
+| ORA-12154 TNS error | Connection descriptor syntax error | Verify inline connection string format in database link definition |
+| Very slow data copy | Large data volume, network latency | Use APPEND hint, consider processing during off-peak hours |
 | XMLAGG issues | Very long narratives | Increase PGA memory or process in batches |
-| View returns no data | Staging tables empty | Verify Step 3 completed successfully |
-| Job doesn't run | Scheduler not enabled | Check `USER_SCHEDULER_JOBS.STATE` |
+| View returns no data | Staging tables empty | Verify Step 3 completed successfully, check database link connectivity |
+| Job doesn't run | Scheduler not enabled | Check `USER_SCHEDULER_JOBS.STATE`, verify job is enabled in ADB |
 
 ### 5.2. Performance Monitoring
 ```sql

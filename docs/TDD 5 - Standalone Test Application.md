@@ -204,15 +204,15 @@ class Config:
 **Environment Variables** (.env file):
 ```ini
 # API Configuration
-ORDS_BASE_URL=http://localhost:8080/ords
+ORDS_BASE_URL=https://<unique_id>-<db_name>.adb.<region>.oraclecloudapps.com/ords
 ORDS_SCHEMA=semantic_search
 ORDS_MODULE=siebel
 API_KEY=your_secure_api_key_here
 
-# Database Configuration (Optional)
+# Database Configuration (Optional - for direct DB mode)
 DB_USER=SEMANTIC_SEARCH
 DB_PASSWORD=your_password_here
-DB_HOST=localhost
+DB_HOST=<adb_connection_string>
 DB_PORT=1521
 DB_SERVICE=vector_db_service
 
@@ -879,11 +879,11 @@ streamlit run app.py
 
 Before running the application:
 
-- [ ] ORDS_BASE_URL configured (e.g., `http://localhost:8080/ords`)
+- [ ] ORDS_BASE_URL configured (format: `https://<unique_id>-<db_name>.adb.<region>.oraclecloudapps.com/ords`)
 - [ ] ORDS_SCHEMA set to `semantic_search`
 - [ ] ORDS_MODULE set to `siebel`
 - [ ] API_KEY obtained and configured
-- [ ] (Optional) Database credentials configured if using direct mode
+- [ ] (Optional) Database credentials configured if using direct mode (with wallet)
 - [ ] DEFAULT_TOP_K set to appropriate value (recommended: 5)
 - [ ] CACHE_ENABLED set based on testing needs
 - [ ] LOG_LEVEL set appropriately (INFO for normal use, DEBUG for troubleshooting)
@@ -923,7 +923,8 @@ from api.ords_client import ORDSClient
 
 def test_search_valid_query():
     """Test API client with valid query"""
-    client = ORDSClient(base_url="http://localhost:8080/ords", api_key="test_key")
+    # Use environment variable or config for ORDS URL
+    client = ORDSClient(base_url="https://<your-adb>.adb.<region>.oraclecloudapps.com/ords", api_key="test_key")
     result = client.search("laptop broken", top_k=5)
     
     assert 'recommendations' in result
@@ -932,14 +933,14 @@ def test_search_valid_query():
 
 def test_search_empty_query():
     """Test API client with empty query"""
-    client = ORDSClient(base_url="http://localhost:8080/ords", api_key="test_key")
+    client = ORDSClient(base_url="https://<your-adb>.adb.<region>.oraclecloudapps.com/ords", api_key="test_key")
     
     with pytest.raises(ValueError):
         client.search("", top_k=5)
 
 def test_health_check():
     """Test API health check"""
-    client = ORDSClient(base_url="http://localhost:8080/ords", api_key="test_key")
+    client = ORDSClient(base_url="https://<your-adb>.adb.<region>.oraclecloudapps.com/ords", api_key="test_key")
     
     assert client.health_check() == True
 ```
@@ -1355,17 +1356,17 @@ coloredlogs==15.0.1
 
 ```ini
 # ORDS API Configuration
-ORDS_BASE_URL=http://localhost:8080/ords
+ORDS_BASE_URL=https://<unique_id>-<db_name>.adb.<region>.oraclecloudapps.com/ords
 ORDS_SCHEMA=semantic_search
 ORDS_MODULE=siebel
 API_KEY=sk_test_1234567890abcdef
 
-# Oracle Database Configuration (Optional - for direct mode)
+# Oracle Database Configuration (Optional - for direct mode with wallet)
 DB_USER=SEMANTIC_SEARCH
 DB_PASSWORD=SecurePassword123!
-DB_HOST=localhost
-DB_PORT=1521
-DB_SERVICE=VECTOR_DB
+DB_CONNECTION_STRING=<service_name>_high
+WALLET_LOCATION=/path/to/wallet
+WALLET_PASSWORD=<wallet_password>
 
 # Application Settings
 DEFAULT_TOP_K=5

@@ -791,8 +791,8 @@ END;
 ### 5.3. Rollback Database Changes
 
 ```sql
--- Connect as SYSDBA
-sqlplus / as sysdba
+-- Connect as ADMIN user (Autonomous Database)
+sqlplus ADMIN/<password>@<service_name>_high
 
 -- Drop scheduler jobs
 BEGIN
@@ -822,12 +822,12 @@ DROP USER SEMANTIC_SEARCH CASCADE;
 
 | Issue | Symptom | Solution |
 |-------|---------|----------|
-| Database link fails | ORA-12154 or ORA-12541 | Verify tnsnames.ora, check Oracle 12c listener |
-| OCI API calls fail | ORA-29532, HTTP 401 | Verify OCI credentials, check Network ACL |
-| ORDS won't start | Port in use | Change ORDS port or kill existing process |
-| API returns 404 | Endpoint not found | Verify ORDS module/template creation |
-| Siebel search hangs | Timeout | Check API_SEARCH_LOG for errors, verify network |
-| No search results | Empty response | Verify vector index exists, check data in tables |
+| Database link fails | ORA-12154 or ORA-12541 | Verify inline connection descriptor syntax, check Oracle 12c listener, verify VNet peering |
+| OCI API calls fail | ORA-29532, HTTP 401 | Verify OCI credentials in DBMS_CLOUD, check compartment OCID |
+| ORDS not accessible | Connection refused | Verify ADB ORDS URL from Azure portal, check private endpoint connectivity |
+| API returns 404 | Endpoint not found | Verify ORDS module/template creation, check schema is REST-enabled |
+| Siebel search hangs | Timeout | Check API_SEARCH_LOG for errors, verify network connectivity to ADB |
+| No search results | Empty response | Verify vector index exists, check data in SIEBEL_KNOWLEDGE_VECTORS table |
 
 ---
 

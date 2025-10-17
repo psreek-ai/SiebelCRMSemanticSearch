@@ -670,7 +670,7 @@ User Query: "All services affected when VPN is down"
 
 ### Benefits
 
-✅ **Oracle 23ai for content search** - "Find similar issues"  
+✅ **Autonomous Database for content search** - "Find similar issues"  
 ✅ **Neo4j for relationships** - "What depends on what"  
 ✅ **Root cause analysis** - Graph traversal for dependencies  
 ✅ **Proactive insights** - "If X fails, Y will be affected"  
@@ -698,7 +698,7 @@ User Query: "All services affected when VPN is down"
 
 ### Key Principles
 
-1. **Oracle 23ai is non-negotiable foundation** - Every phase builds on it
+1. **Oracle Autonomous Database is the non-negotiable foundation** - Every phase builds on it
 2. **Incremental value** - Each phase delivers independently
 3. **Backward compatible** - Old endpoints keep working
 4. **Data sovereignty** - All critical data stays in Oracle
@@ -769,9 +769,9 @@ User Query: "All services affected when VPN is down"
 
 ## Conclusion
 
-This roadmap shows how **Oracle 23ai serves as the foundation** for a 5-phase evolution from basic vector search to an advanced enterprise AI platform. Each phase:
+This roadmap shows how **Oracle Autonomous Database on Azure serves as the foundation** for a 5-phase evolution from basic vector search to an advanced enterprise AI platform. Each phase:
 
-✅ **Builds on Oracle 23ai** - No replacement, only enhancement  
+✅ **Builds on Autonomous Database** - No replacement, only enhancement  
 ✅ **Delivers incremental value** - Can stop at any phase  
 ✅ **Maintains data security** - Critical data stays in Oracle  
 ✅ **Allows flexible investment** - Choose phases based on needs  

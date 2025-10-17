@@ -442,12 +442,12 @@ WHERE template_id = (
 #### 5.1. Test with curl
 
 ```bash
-# Test the API endpoint
+# Test the API endpoint using Autonomous Database ORDS URL
 curl -X POST \
   -H "Content-Type: text/plain" \
   -H "Top-K: 5" \
   -d "My computer is running very slow" \
-  http://localhost:8080/ords/semantic_search/siebel/search
+  https://<unique_id>-<db_name>.adb.<region>.oraclecloudapps.com/ords/semantic_search/siebel/search
 
 # Expected response:
 # {
@@ -472,7 +472,7 @@ curl -X POST \
 
 1. Open Postman
 2. Create new POST request
-3. URL: `http://localhost:8080/ords/semantic_search/siebel/search`
+3. URL: `https://<unique_id>-<db_name>.adb.<region>.oraclecloudapps.com/ords/semantic_search/siebel/search`
 4. Headers:
    - `Content-Type`: `text/plain`
    - `Top-K`: `5`
@@ -486,7 +486,7 @@ curl -X POST \
 # Test with empty query
 curl -X POST \
   -H "Content-Type: text/plain" \
-  http://localhost:8080/ords/semantic_search/siebel/search
+  https://<unique_id>-<db_name>.adb.<region>.oraclecloudapps.com/ords/semantic_search/siebel/search
 
 # Expected: Error response with appropriate message
 
@@ -495,7 +495,7 @@ curl -X POST \
   -H "Content-Type: text/plain" \
   -H "Top-K: abc" \
   -d "Test query" \
-  http://localhost:8080/ords/semantic_search/siebel/search
+  https://<unique_id>-<db_name>.adb.<region>.oraclecloudapps.com/ords/semantic_search/siebel/search
 
 # Expected: Should default to 5 and return results
 ```
@@ -650,13 +650,13 @@ curl -X POST \
   -H "X-API-Key: YOUR_SECURE_API_KEY_HERE" \
   -H "Top-K: 5" \
   -d "Test query" \
-  http://localhost:8080/ords/semantic_search/siebel/search
+  https://<unique_id>-<db_name>.adb.<region>.oraclecloudapps.com/ords/semantic_search/siebel/search
 
 # Test without API key (should fail)
 curl -X POST \
   -H "Content-Type: text/plain" \
   -d "Test query" \
-  http://localhost:8080/ords/semantic_search/siebel/search
+  https://<unique_id>-<db_name>.adb.<region>.oraclecloudapps.com/ords/semantic_search/siebel/search
 
 # Expected: 401 Unauthorized
 ```

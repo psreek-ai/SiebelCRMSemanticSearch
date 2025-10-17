@@ -232,11 +232,11 @@ SET TIMING OFF;
 
 ```bash
 # Test 1.5.1: API accessibility
-curl -X GET http://localhost:8080/ords/
+curl -X GET https://<unique_id>-<db_name>.adb.<region>.oraclecloudapps.com/ords/
 
-# Expected: HTML welcome page
+# Expected: HTML welcome page or JSON response
 # Pass Criteria: HTTP 200
-# Fail Action: Start ORDS, check logs
+# Fail Action: Verify ADB ORDS URL, check network connectivity
 
 # Test 1.5.2: Search endpoint with valid query
 curl -X POST \
@@ -244,17 +244,17 @@ curl -X POST \
   -H "X-API-Key: <API_KEY>" \
   -H "Top-K: 3" \
   -d "laptop screen broken" \
-  http://localhost:8080/ords/semantic_search/siebel/search
+  https://<unique_id>-<db_name>.adb.<region>.oraclecloudapps.com/ords/semantic_search/siebel/search
 
 # Expected: JSON with recommendations
 # Pass Criteria: HTTP 200, valid JSON, 3 recommendations
-# Fail Action: Check PL/SQL procedure, review logs
+# Fail Action: Check PL/SQL procedure, review API_SEARCH_LOG table
 
 # Test 1.5.3: Error handling - empty query
 curl -X POST \
   -H "Content-Type: text/plain" \
   -H "X-API-Key: <API_KEY>" \
-  http://localhost:8080/ords/semantic_search/siebel/search
+  https://<unique_id>-<db_name>.adb.<region>.oraclecloudapps.com/ords/semantic_search/siebel/search
 
 # Expected: Error message in JSON
 # Pass Criteria: HTTP 200, error field present
@@ -264,7 +264,7 @@ curl -X POST \
 curl -X POST \
   -H "Content-Type: text/plain" \
   -d "test query" \
-  http://localhost:8080/ords/semantic_search/siebel/search
+  https://<unique_id>-<db_name>.adb.<region>.oraclecloudapps.com/ords/semantic_search/siebel/search
 
 # Expected: 401 Unauthorized
 # Pass Criteria: HTTP 401
@@ -395,7 +395,7 @@ kill <ords_pid>
 
 **Test 2.3.2: Database Connection Loss**
 ```sql
--- Simulate connection issue (as SYSDBA)
+-- Simulate connection issue (as ADMIN user in Autonomous Database)
 ALTER SYSTEM KILL SESSION '<sid>,<serial#>' IMMEDIATE;
 ```
 
