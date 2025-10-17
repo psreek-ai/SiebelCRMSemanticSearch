@@ -1,185 +1,912 @@
 # Technical Design Document 3: Semantic Search API
 
-**Version:** 2.1
-**Date:** 2025-10-16
+**Version:** 2.2
+**Date:** 2025-10-17
 **Owner:** Database Development Team
 
 ## 1. Objective
-This document specifies the design of the RESTful API that will provide the semantic search functionality. This API will be built and hosted directly within the Oracle 23ai database using **Oracle REST Data Services (ORDS)**. It serves as a high-performance, secure endpoint that encapsulates all AI and vector database logic, abstracting it from the client applications (Siebel and the test app).
+This document specifies the design and implementation of the RESTful API that provides semantic search functionality. The API is built and hosted directly within the Oracle 23ai database using **Oracle REST Data Services (ORDS)**, serving as a high-performance, secure endpoint that encapsulates all AI and vector database logic.
 
 ## 2. Technology Stack
 * **Hosting Platform:** Oracle Database 23ai (Enterprise Edition)
-* **API Engine:** Oracle REST Data Services (ORDS)
+* **API Engine:** Oracle REST Data Services (ORDS) 23.x or later
 * **Language:** PL/SQL, SQL with JSON extensions
+* **Security:** OAuth2 / API Keys via ORDS
 
-## 3. API Endpoint Definition
+## 3. Prerequisites
 
-### 3.1. Search Endpoint
-* **URL:** `https://<db_host>/ords/semantic_search/siebel/search`
-* **Method:** `POST`
+Before implementing this TDD, ensure:
+- ✅ TDD 1 is complete (data extraction and staging)
+- ✅ TDD 2 is complete (vector generation and indexing)
+- ✅ ORDS is installed and configured on Oracle 23ai
 
-#### 3.1.1. Request Payload
-The request body will be plain text containing the user's query. A header will specify the number of results desired.
-* **Header:** `Top-K: 5`
-* **Body (text/plain):** `The screen on my work laptop is flickering and showing strange colors.`
+---
 
-#### 3.1.2. Response Payload (Success - HTTP 200 OK)
-```json
-{
-  "search_id": "a7b2c9f4-e8d1-4f6a-9b3c-5d1e2f7a8b9c",
-  "recommendations": [
-    {
-      "rank": 1,
-      "catalog_item_id": "1-ABCDE",
-      "catalog_path": " > Hardware > Laptop > Screen Repair",
-      "relevance_score": 0.8954
-    },
-    {
-      "rank": 2,
-      "catalog_item_id": "1-FGHIJ",
-      "catalog_path": " > Hardware > Laptop > Full Replacement",
-      "relevance_score": 0.8512
-    }
-  ]
-}
+## 4. Implementation Steps
+
+### Step 1: Install and Configure ORDS
+
+**Executor:** Database Administrator  
+**Duration:** 45 minutes
+
+#### 1.1. Download and Install ORDS
+
+```bash
+# Download ORDS from Oracle website
+# https://www.oracle.com/database/technologies/appdev/rest.html
+
+# Extract ORDS
+cd /opt/oracle
+unzip ords-latest.zip -d ords
+
+# Set environment variables
+export ORDS_HOME=/opt/oracle/ords
+export PATH=$ORDS_HOME/bin:$PATH
+
+# Verify installation
+ords --version
+# Expected output: ORDS 23.x.x.xxx.xxxx
 ```
 
-## 4. Core Logic: PL/SQL Implementation
-All API logic will be encapsulated in a single PL/SQL package within the `SEMANTIC_SEARCH` schema for better organization and maintenance.
+#### 1.2. Configure ORDS Connection Pool
 
-### 4.1. Prerequisites for OCI Callouts
-1.  **Network ACL:** The database administrator must configure a Network Access Control List (ACL) to allow the `SEMANTIC_SEARCH` schema to make outbound HTTPS requests to the OCI Generative AI endpoint.
-2.  **OCI Credentials:** An OCI credential object must be created in the database to securely handle authentication with the OCI APIs.
-    ```sql
-    BEGIN
-      DBMS_CLOUD.CREATE_CREDENTIAL(
-        credential_name => 'OCI_GENAI_CREDENTIAL',
-        user_ocid       => 'ocid1.user.oc1..aaaa...',
-        tenancy_ocid    => 'ocid1.tenancy.oc1..aaaa...',
-        private_key     => '-----BEGIN PRIVATE KEY-----...',
-        fingerprint     => 'f1:2e:...'
-      );
-    END;
-    /
-    ```
+```bash
+# Create configuration directory
+mkdir -p /opt/oracle/ords/config
 
-### 4.2. Stored Procedure: `GET_SEMANTIC_RECOMMENDATIONS`
-This procedure will contain the end-to-end search logic.
+# Run ORDS configuration
+cd /opt/oracle/ords
+ords install
+
+# You'll be prompted for:
+# - Database hostname: <your-23ai-db-host>
+# - Database port: 1521
+# - Database service name: <your-service-name>
+# - Administrator username: SYS
+# - Administrator password: <sys-password>
+# - Default tablespace for ORDS metadata: SYSAUX
+# - Temporary tablespace for ORDS metadata: TEMP
+# - ORDS public user password: <create-secure-password>
+```
+
+#### 1.3. Start ORDS in Standalone Mode
+
+```bash
+# Start ORDS on port 8080 (or your preferred port)
+ords --config /opt/oracle/ords/config serve
+
+# Expected output:
+# ORDS is ready
+# Mapped local pools from /opt/oracle/ords/config/databases:
+# /ords/ => default => VALID
+# 
+# Server started at http://localhost:8080/ords
+```
+
+#### 1.4. Verify ORDS is Running
+
+```bash
+# Test ORDS health endpoint
+curl http://localhost:8080/ords/
+
+# Expected: HTML page showing ORDS welcome page
+```
+
+#### 1.5. Configure ORDS as a Service (Optional - for production)
+
+Create systemd service file: `/etc/systemd/system/ords.service`
+
+```ini
+[Unit]
+Description=Oracle REST Data Services
+After=network.target
+
+[Service]
+Type=simple
+User=oracle
+WorkingDirectory=/opt/oracle/ords
+ExecStart=/opt/oracle/ords/bin/ords --config /opt/oracle/ords/config serve
+Restart=on-failure
+RestartSec=10
+
+[Install]
+WantedBy=multi-user.target
+```
+
+```bash
+# Enable and start the service
+sudo systemctl daemon-reload
+sudo systemctl enable ords
+sudo systemctl start ords
+sudo systemctl status ords
+```
+
+---
+
+### Step 2: Enable ORDS for SEMANTIC_SEARCH Schema
+
+**Executor:** Database Administrator  
+**Duration:** 10 minutes
+
+#### 2.1. Enable REST Services for Schema
 
 ```sql
-CREATE OR REPLACE PROCEDURE SEMANTIC_SEARCH.GET_SEMANTIC_RECOMMENDATIONS (
-    p_query IN CLOB,
-    p_top_k IN NUMBER DEFAULT 5
+-- Connect as SEMANTIC_SEARCH user
+
+BEGIN
+    ORDS.ENABLE_SCHEMA(
+        p_enabled             => TRUE,
+        p_schema              => 'SEMANTIC_SEARCH',
+        p_url_mapping_type    => 'BASE_PATH',
+        p_url_mapping_pattern => 'semantic_search',
+        p_auto_rest_auth      => FALSE
+    );
+    COMMIT;
+END;
+/
+
+-- Verify schema is enabled
+SELECT name, enabled, url_mapping_type, url_mapping_pattern
+FROM user_ords_schemas;
+```
+
+#### 2.2. Test Schema Accessibility
+
+```bash
+# Test the schema endpoint
+curl http://localhost:8080/ords/semantic_search/
+
+# Expected: 404 or empty response (no modules defined yet)
+```
+
+---
+
+### Step 3: Create PL/SQL Search Procedure
+
+**Executor:** PL/SQL Developer  
+**Duration:** 30 minutes
+
+#### 3.1. Create Main Search Procedure
+
+```sql
+-- Connect as SEMANTIC_SEARCH user
+
+CREATE OR REPLACE PROCEDURE GET_SEMANTIC_RECOMMENDATIONS (
+    p_query_text    IN  CLOB,
+    p_top_k         IN  NUMBER DEFAULT 5,
+    p_result_json   OUT CLOB
 ) AS
-    l_query_vector      VECTOR;
-    l_json_response     CLOB;
+    -- Variables for query vector generation
+    l_query_vector      VECTOR(1024, FLOAT64);
     l_oci_response      CLOB;
     l_oci_req_body      CLOB;
-    l_embedding_url     VARCHAR2(512) := 'https://inference.generativeai.<region>.oci.oraclecloud.com/20231130/actions/embedText';
-    l_search_id         VARCHAR2(64) := SYS_GUID();
+    l_embedding_url     VARCHAR2(512);
+    l_search_id         VARCHAR2(64);
+    
+    -- Configuration variables (customize for your environment)
+    l_compartment_id    VARCHAR2(200) := 'ocid1.compartment.oc1..aaaaaaaa...your_compartment_ocid';
+    l_region            VARCHAR2(50) := 'us-ashburn-1';
+    l_model_id          VARCHAR2(100) := 'cohere.embed-english-v3.0';
+    
+    -- Exception handling
+    l_error_message     VARCHAR2(4000);
+    
 BEGIN
-    -- Step 1: Generate vector for the user query by calling OCI GenAI service
-    l_oci_req_body := JSON_OBJECT(
-        'servingMode'   KEY 'servingType' VALUE 'ON_DEMAND',
-        'compartmentId' KEY 'value' VALUE '<your_compartment_ocid>',
-        'modelId'       KEY 'value' VALUE 'cohere.embed-english-v3.0',
-        'inputs'        KEY 'value' VALUE JSON_ARRAY(
-            JSON_OBJECT('text' KEY 'value' VALUE p_query)
+    -- Generate unique search ID for tracking
+    l_search_id := SYS_GUID();
+    
+    -- Validate input
+    IF p_query_text IS NULL OR LENGTH(TRIM(p_query_text)) = 0 THEN
+        p_result_json := JSON_OBJECT(
+            'error' VALUE 'Query text cannot be empty',
+            'search_id' VALUE l_search_id
+        );
+        RETURN;
+    END IF;
+    
+    -- Build embedding service URL
+    l_embedding_url := 'https://inference.generativeai.' || l_region || '.oci.oraclecloud.com/20231130/actions/embedText';
+    
+    -- Step 1: Generate vector for the user query
+    BEGIN
+        -- Clean the query text
+        DECLARE
+            l_clean_query CLOB;
+        BEGIN
+            l_clean_query := CLEAN_TEXT_FOR_EMBEDDING(p_query_text);
+            
+            -- Build API request body
+            SELECT JSON_OBJECT(
+                'servingMode' VALUE JSON_OBJECT('servingType' VALUE 'ON_DEMAND'),
+                'compartmentId' VALUE l_compartment_id,
+                'inputs' VALUE JSON_ARRAY(l_clean_query)
+            ) INTO l_oci_req_body FROM DUAL;
+            
+            -- Call OCI Generative AI service
+            l_oci_response := DBMS_CLOUD.SEND_REQUEST(
+                credential_name => 'OCI_GENAI_CREDENTIAL',
+                uri             => l_embedding_url,
+                method          => 'POST',
+                body            => UTL_RAW.CAST_TO_RAW(l_oci_req_body)
+            );
+            
+            -- Extract the vector from the JSON response
+            SELECT JSON_VALUE(l_oci_response, '$.embeddings[0]' RETURNING VECTOR(1024, FLOAT64))
+            INTO l_query_vector
+            FROM DUAL;
+        END;
+    EXCEPTION
+        WHEN OTHERS THEN
+            l_error_message := 'Error generating query embedding: ' || SQLERRM;
+            p_result_json := JSON_OBJECT(
+                'error' VALUE l_error_message,
+                'search_id' VALUE l_search_id
+            );
+            RETURN;
+    END;
+    
+    -- Step 2: Perform vector similarity search and aggregate results
+    BEGIN
+        WITH similarity_scores AS (
+            -- Find most similar vectors
+            SELECT
+                v.SR_ID,
+                v.CATALOG_ITEM_ID,
+                v.CATALOG_PATH,
+                VECTOR_DISTANCE(v.NARRATIVE_VECTOR, l_query_vector, COSINE) AS DISTANCE_SCORE,
+                (1 - VECTOR_DISTANCE(v.NARRATIVE_VECTOR, l_query_vector, COSINE)) AS SIMILARITY_SCORE
+            FROM
+                SIEBEL_KNOWLEDGE_VECTORS v
+            WHERE
+                v.NARRATIVE_VECTOR IS NOT NULL
+            ORDER BY
+                VECTOR_DISTANCE(v.NARRATIVE_VECTOR, l_query_vector, COSINE) ASC
+            FETCH FIRST 100 ROWS ONLY  -- Get top 100 similar records
+        ),
+        catalog_aggregation AS (
+            -- Aggregate by catalog item and rank
+            SELECT
+                CATALOG_ITEM_ID,
+                CATALOG_PATH,
+                COUNT(*) AS FREQUENCY,
+                ROUND(AVG(SIMILARITY_SCORE), 4) AS AVG_RELEVANCE_SCORE,
+                ROUND(MAX(SIMILARITY_SCORE), 4) AS MAX_RELEVANCE_SCORE
+            FROM
+                similarity_scores
+            GROUP BY
+                CATALOG_ITEM_ID,
+                CATALOG_PATH
+            ORDER BY
+                FREQUENCY DESC,
+                AVG_RELEVANCE_SCORE DESC
+            FETCH FIRST p_top_k ROWS ONLY
         )
-    );
-    
-    l_oci_response := DBMS_CLOUD.SEND_REQUEST(
-        credential_name => 'OCI_GENAI_CREDENTIAL',
-        uri             => l_embedding_url,
-        method          => 'POST',
-        body            => UTL_RAW.CAST_TO_RAW(l_oci_req_body)
-    );
-    
-    -- Extract the vector from the JSON response
-    SELECT jt.embedding INTO l_query_vector
-    FROM JSON_TABLE(l_oci_response, '$.embeddings[*]' COLUMNS (embedding VECTOR PATH '$[*]'));
-
-    -- Step 2: Perform vector search, rank results, and construct the final JSON response
-    SELECT JSON_OBJECT (
-        'search_id' KEY l_search_id,
-        'recommendations' KEY (
-            SELECT JSON_ARRAYAGG(
-                JSON_OBJECT(
-                    'rank' KEY r.rnk,
-                    'catalog_item_id' KEY r.CATALOG_ITEM_ID,
-                    'catalog_path' KEY r.CATALOG_PATH,
-                    'relevance_score' KEY r.relevance_score
+        -- Build final JSON response
+        SELECT JSON_OBJECT(
+            'search_id' VALUE l_search_id,
+            'query' VALUE p_query_text,
+            'timestamp' VALUE TO_CHAR(SYSTIMESTAMP, 'YYYY-MM-DD"T"HH24:MI:SS.FF3"Z"'),
+            'recommendations' VALUE (
+                SELECT JSON_ARRAYAGG(
+                    JSON_OBJECT(
+                        'rank' VALUE ROWNUM,
+                        'catalog_item_id' VALUE CATALOG_ITEM_ID,
+                        'catalog_path' VALUE CATALOG_PATH,
+                        'relevance_score' VALUE AVG_RELEVANCE_SCORE,
+                        'frequency' VALUE FREQUENCY,
+                        'max_score' VALUE MAX_RELEVANCE_SCORE
+                    )
+                    ORDER BY ROWNUM
                 )
-                ORDER BY r.rnk
+                FROM catalog_aggregation
             )
-            FROM (
-                SELECT
-                    v.CATALOG_ITEM_ID,
-                    v.CATALOG_PATH,
-                    VECTOR_DISTANCE(v.NARRATIVE_VECTOR, l_query_vector, COSINE) as relevance_score,
-                    DENSE_RANK() OVER (ORDER BY VECTOR_DISTANCE(v.NARRATIVE_VECTOR, l_query_vector, COSINE) DESC) as rnk
-                FROM
-                    SIEBEL_KNOWLEDGE_VECTORS v
-                ORDER BY
-                    relevance_score DESC
-                FETCH FIRST p_top_k ROWS ONLY
-            ) r
-        )
-    ) INTO l_json_response
-    FROM DUAL;
-
-    -- Step 3: Set HTTP headers and print the response
-    ORDS.SET_HEADER('Content-Type', 'application/json');
-    HTP.P(l_json_response);
-
+        ) INTO p_result_json
+        FROM DUAL;
+        
+    EXCEPTION
+        WHEN OTHERS THEN
+            l_error_message := 'Error performing vector search: ' || SQLERRM;
+            p_result_json := JSON_OBJECT(
+                'error' VALUE l_error_message,
+                'search_id' VALUE l_search_id
+            );
+            RETURN;
+    END;
+    
 EXCEPTION
     WHEN OTHERS THEN
-        ORDS.SET_STATUS(500); -- Internal Server Error
-        HTP.P('{"error": "' || SQLERRM || '"}');
+        -- Catch-all exception handler
+        p_result_json := JSON_OBJECT(
+            'error' VALUE 'Unexpected error: ' || SQLERRM,
+            'search_id' VALUE l_search_id
+        );
 END GET_SEMANTIC_RECOMMENDATIONS;
 /
 ```
 
-### 4.3. ORDS Configuration
-The following block registers the PL/SQL procedure as a REST endpoint.
+#### 3.2. Create Wrapper Procedure for ORDS
+
+ORDS requires a procedure that uses HTTP methods. Create a wrapper:
+
+```sql
+CREATE OR REPLACE PROCEDURE HANDLE_SEARCH_REQUEST AS
+    l_query_text    CLOB;
+    l_top_k         NUMBER;
+    l_result_json   CLOB;
+BEGIN
+    -- Get query text from request body
+    l_query_text := UTL_RAW.CAST_TO_VARCHAR2(OWA_UTIL.GET_CGI_ENV('wsgi.input'));
+    
+    -- Get Top-K from header (default to 5 if not provided)
+    BEGIN
+        l_top_k := TO_NUMBER(OWA_UTIL.GET_CGI_ENV('HTTP_TOP_K'));
+    EXCEPTION
+        WHEN OTHERS THEN
+            l_top_k := 5;
+    END;
+    
+    -- Call main search procedure
+    GET_SEMANTIC_RECOMMENDATIONS(
+        p_query_text => l_query_text,
+        p_top_k => l_top_k,
+        p_result_json => l_result_json
+    );
+    
+    -- Set response headers
+    OWA_UTIL.MIME_HEADER('application/json', FALSE);
+    OWA_UTIL.HTTP_HEADER_CLOSE;
+    
+    -- Return JSON response
+    HTP.PRN(l_result_json);
+    
+EXCEPTION
+    WHEN OTHERS THEN
+        OWA_UTIL.STATUS_LINE(500, 'Internal Server Error');
+        OWA_UTIL.MIME_HEADER('application/json', FALSE);
+        OWA_UTIL.HTTP_HEADER_CLOSE;
+        HTP.PRN(JSON_OBJECT('error' VALUE SQLERRM));
+END HANDLE_SEARCH_REQUEST;
+/
+```
+
+#### 3.3. Test the Procedure Directly
+
+```sql
+-- Test the search procedure directly
+DECLARE
+    l_result CLOB;
+BEGIN
+    GET_SEMANTIC_RECOMMENDATIONS(
+        p_query_text => 'My laptop screen is broken',
+        p_top_k => 5,
+        p_result_json => l_result
+    );
+    
+    DBMS_OUTPUT.PUT_LINE(l_result);
+END;
+/
+```
+
+---
+
+### Step 4: Register API Endpoint with ORDS
+
+**Executor:** Database Administrator  
+**Duration:** 15 minutes
+
+#### 4.1. Create ORDS Module
+
+```sql
+-- Connect as SEMANTIC_SEARCH user
+
+BEGIN
+    -- Define the REST module
+    ORDS.DEFINE_MODULE(
+        p_module_name    => 'siebel_search',
+        p_base_path      => '/siebel/',
+        p_items_per_page => 0,
+        p_status         => 'PUBLISHED',
+        p_comments       => 'Semantic search API for Siebel CRM'
+    );
+    
+    COMMIT;
+END;
+/
+
+-- Verify module creation
+SELECT id, name, base_path, status
+FROM user_ords_modules;
+```
+
+#### 4.2. Create ORDS Template
 
 ```sql
 BEGIN
-    ORDS.ENABLE_SCHEMA(p_enabled => TRUE, p_schema => 'SEMANTIC_SEARCH');
-
-    ORDS.DEFINE_MODULE(
-        p_module_name    => 'siebel',
-        p_base_path      => '/siebel/',
-        p_items_per_page => 0
-    );
-
+    -- Define the URL template
     ORDS.DEFINE_TEMPLATE(
-        p_module_name => 'siebel',
-        p_pattern     => 'search'
+        p_module_name => 'siebel_search',
+        p_pattern     => 'search',
+        p_priority    => 0,
+        p_etag_type   => 'HASH',
+        p_comments    => 'Endpoint for semantic search queries'
     );
+    
+    COMMIT;
+END;
+/
 
+-- Verify template creation
+SELECT id, uri_template, priority
+FROM user_ords_templates
+WHERE module_id = (SELECT id FROM user_ords_modules WHERE name = 'siebel_search');
+```
+
+#### 4.3. Create ORDS Handler
+
+```sql
+BEGIN
+    -- Define the POST handler
     ORDS.DEFINE_HANDLER(
-        p_module_name    => 'siebel',
+        p_module_name    => 'siebel_search',
         p_pattern        => 'search',
         p_method         => 'POST',
         p_source_type    => ORDS.source_type_plsql,
-        p_source         => 'BEGIN SEMANTIC_SEARCH.GET_SEMANTIC_RECOMMENDATIONS(p_query => :body_text, p_top_k => :top_k); END;',
-        p_items_per_page => 0
+        p_source         => 'BEGIN HANDLE_SEARCH_REQUEST; END;',
+        p_items_per_page => 0,
+        p_comments       => 'POST handler for search requests'
     );
     
-    -- Define the parameter for the Top-K header
-    ORDS.DEFINE_PARAMETER(
-        p_module_name        => 'siebel',
-        p_pattern            => 'search',
-        p_method             => 'POST',
-        p_name               => 'top_k',
-        p_bind_variable_name => 'top_k',
-        p_source_type        => 'HEADER',
-        p_param_type         => 'INT',
-        p_access_method      => 'IN'
-    );
+    COMMIT;
+END;
+/
 
+-- Verify handler creation
+SELECT id, method, source_type
+FROM user_ords_handlers
+WHERE template_id = (
+    SELECT id FROM user_ords_templates 
+    WHERE module_id = (SELECT id FROM user_ords_modules WHERE name = 'siebel_search')
+);
+```
+
+---
+
+### Step 5: Test the API Endpoint
+
+**Executor:** QA / Developer  
+**Duration:** 15 minutes
+
+#### 5.1. Test with curl
+
+```bash
+# Test the API endpoint
+curl -X POST \
+  -H "Content-Type: text/plain" \
+  -H "Top-K: 5" \
+  -d "My computer is running very slow" \
+  http://localhost:8080/ords/semantic_search/siebel/search
+
+# Expected response:
+# {
+#   "search_id": "ABC123...",
+#   "query": "My computer is running very slow",
+#   "timestamp": "2025-10-17T10:30:45.123Z",
+#   "recommendations": [
+#     {
+#       "rank": 1,
+#       "catalog_item_id": "1-XXXXX",
+#       "catalog_path": " > IT Support > Hardware > Performance Troubleshooting",
+#       "relevance_score": 0.8745,
+#       "frequency": 23,
+#       "max_score": 0.9123
+#     },
+#     ...
+#   ]
+# }
+```
+
+#### 5.2. Test with Postman
+
+1. Open Postman
+2. Create new POST request
+3. URL: `http://localhost:8080/ords/semantic_search/siebel/search`
+4. Headers:
+   - `Content-Type`: `text/plain`
+   - `Top-K`: `5`
+5. Body (raw): `My laptop screen is flickering`
+6. Send request
+7. Verify JSON response
+
+#### 5.3. Test Error Handling
+
+```bash
+# Test with empty query
+curl -X POST \
+  -H "Content-Type: text/plain" \
+  http://localhost:8080/ords/semantic_search/siebel/search
+
+# Expected: Error response with appropriate message
+
+# Test with invalid Top-K
+curl -X POST \
+  -H "Content-Type: text/plain" \
+  -H "Top-K: abc" \
+  -d "Test query" \
+  http://localhost:8080/ords/semantic_search/siebel/search
+
+# Expected: Should default to 5 and return results
+```
+
+---
+
+### Step 6: Implement Security
+
+**Executor:** Security Administrator  
+**Duration:** 30 minutes
+
+#### 6.1. Create ORDS Role and Privilege
+
+```sql
+-- Connect as SEMANTIC_SEARCH user
+
+BEGIN
+    -- Create a role for API access
+    ORDS.CREATE_ROLE(
+        p_role_name => 'siebel_search_role'
+    );
+    
+    COMMIT;
+END;
+/
+
+-- Create a privilege for the search endpoint
+BEGIN
+    ORDS.CREATE_PRIVILEGE(
+        p_name        => 'siebel_search_privilege',
+        p_role_name   => 'siebel_search_role',
+        p_label       => 'Siebel Search API Access',
+        p_description => 'Privilege to access semantic search API',
+        p_comments    => 'Required for Siebel CRM integration'
+    );
+    
+    COMMIT;
+END;
+/
+
+-- Associate privilege with the module
+BEGIN
+    ORDS.CREATE_PRIVILEGE_MAPPING(
+        p_privilege_name => 'siebel_search_privilege',
+        p_pattern        => '/siebel/*'
+    );
+    
     COMMIT;
 END;
 /
 ```
+
+#### 6.2. Create OAuth2 Client (Option 1 - Recommended)
+
+```sql
+BEGIN
+    OAUTH.CREATE_CLIENT(
+        p_name            => 'siebel_crm_client',
+        p_grant_type      => 'CLIENT_CREDENTIALS',
+        p_owner           => 'Siebel CRM Application',
+        p_description     => 'OAuth2 client for Siebel CRM integration',
+        p_support_email   => 'siebel-admin@example.com',
+        p_privilege_names => 'siebel_search_privilege'
+    );
+    
+    COMMIT;
+END;
+/
+
+-- Retrieve client ID and secret
+SELECT 
+    name,
+    client_id,
+    client_secret,
+    grant_type
+FROM user_ords_clients
+WHERE name = 'siebel_crm_client';
+
+-- IMPORTANT: Save the client_id and client_secret securely!
+```
+
+#### 6.3. Or Use API Key (Option 2 - Simpler)
+
+If you prefer a simpler approach with API keys:
+
+```bash
+# Generate a secure API key
+openssl rand -base64 32
+
+# Store this key in Siebel Named Subsystem configuration
+# Validate the key in your PL/SQL wrapper procedure
+```
+
+Update the wrapper procedure to check for API key:
+
+```sql
+CREATE OR REPLACE PROCEDURE HANDLE_SEARCH_REQUEST AS
+    l_query_text    CLOB;
+    l_top_k         NUMBER;
+    l_result_json   CLOB;
+    l_api_key       VARCHAR2(100);
+    l_expected_key  VARCHAR2(100) := 'YOUR_SECURE_API_KEY_HERE'; -- Store securely!
+BEGIN
+    -- Get API key from header
+    l_api_key := OWA_UTIL.GET_CGI_ENV('HTTP_X_API_KEY');
+    
+    -- Validate API key
+    IF l_api_key IS NULL OR l_api_key != l_expected_key THEN
+        OWA_UTIL.STATUS_LINE(401, 'Unauthorized');
+        OWA_UTIL.MIME_HEADER('application/json', FALSE);
+        OWA_UTIL.HTTP_HEADER_CLOSE;
+        HTP.PRN(JSON_OBJECT('error' VALUE 'Invalid or missing API key'));
+        RETURN;
+    END IF;
+    
+    -- Continue with normal processing...
+    l_query_text := UTL_RAW.CAST_TO_VARCHAR2(OWA_UTIL.GET_CGI_ENV('wsgi.input'));
+    
+    BEGIN
+        l_top_k := TO_NUMBER(OWA_UTIL.GET_CGI_ENV('HTTP_TOP_K'));
+    EXCEPTION
+        WHEN OTHERS THEN
+            l_top_k := 5;
+    END;
+    
+    GET_SEMANTIC_RECOMMENDATIONS(
+        p_query_text => l_query_text,
+        p_top_k => l_top_k,
+        p_result_json => l_result_json
+    );
+    
+    OWA_UTIL.MIME_HEADER('application/json', FALSE);
+    OWA_UTIL.HTTP_HEADER_CLOSE;
+    HTP.PRN(l_result_json);
+    
+EXCEPTION
+    WHEN OTHERS THEN
+        OWA_UTIL.STATUS_LINE(500, 'Internal Server Error');
+        OWA_UTIL.MIME_HEADER('application/json', FALSE);
+        OWA_UTIL.HTTP_HEADER_CLOSE;
+        HTP.PRN(JSON_OBJECT('error' VALUE SQLERRM));
+END HANDLE_SEARCH_REQUEST;
+/
+```
+
+#### 6.4. Test Secured Endpoint
+
+```bash
+# Test with API key
+curl -X POST \
+  -H "Content-Type: text/plain" \
+  -H "X-API-Key: YOUR_SECURE_API_KEY_HERE" \
+  -H "Top-K: 5" \
+  -d "Test query" \
+  http://localhost:8080/ords/semantic_search/siebel/search
+
+# Test without API key (should fail)
+curl -X POST \
+  -H "Content-Type: text/plain" \
+  -d "Test query" \
+  http://localhost:8080/ords/semantic_search/siebel/search
+
+# Expected: 401 Unauthorized
+```
+
+---
+
+### Step 7: Enable Logging and Monitoring
+
+**Executor:** Database Administrator  
+**Duration:** 20 minutes
+
+#### 7.1. Create Logging Table
+
+```sql
+-- Create table to log API requests
+CREATE TABLE API_SEARCH_LOG (
+    log_id              NUMBER GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+    search_id           VARCHAR2(64),
+    query_text          CLOB,
+    top_k               NUMBER,
+    response_time_ms    NUMBER,
+    result_count        NUMBER,
+    error_message       VARCHAR2(4000),
+    request_timestamp   TIMESTAMP DEFAULT SYSTIMESTAMP,
+    client_ip           VARCHAR2(50)
+);
+
+-- Create index for performance
+CREATE INDEX IDX_SEARCH_LOG_TS ON API_SEARCH_LOG(request_timestamp);
+```
+
+#### 7.2. Update Procedure to Include Logging
+
+```sql
+CREATE OR REPLACE PROCEDURE GET_SEMANTIC_RECOMMENDATIONS (
+    p_query_text    IN  CLOB,
+    p_top_k         IN  NUMBER DEFAULT 5,
+    p_result_json   OUT CLOB
+) AS
+    -- All previous declarations...
+    l_start_time        TIMESTAMP;
+    l_end_time          TIMESTAMP;
+    l_response_time_ms  NUMBER;
+    l_result_count      NUMBER := 0;
+    
+BEGIN
+    l_start_time := SYSTIMESTAMP;
+    l_search_id := SYS_GUID();
+    
+    -- All previous logic...
+    -- (Keep existing code)
+    
+    -- After successful execution, log the request
+    l_end_time := SYSTIMESTAMP;
+    l_response_time_ms := EXTRACT(SECOND FROM (l_end_time - l_start_time)) * 1000;
+    
+    -- Count results from JSON
+    BEGIN
+        SELECT JSON_VALUE(p_result_json, '$.recommendations.size()')
+        INTO l_result_count
+        FROM DUAL;
+    EXCEPTION
+        WHEN OTHERS THEN
+            l_result_count := 0;
+    END;
+    
+    -- Log the request (autonomous transaction)
+    BEGIN
+        INSERT INTO API_SEARCH_LOG (
+            search_id, query_text, top_k, response_time_ms, 
+            result_count, error_message
+        ) VALUES (
+            l_search_id, p_query_text, p_top_k, l_response_time_ms,
+            l_result_count, NULL
+        );
+        COMMIT;
+    EXCEPTION
+        WHEN OTHERS THEN
+            NULL; -- Don't fail the request if logging fails
+    END;
+    
+EXCEPTION
+    WHEN OTHERS THEN
+        -- Log error
+        BEGIN
+            INSERT INTO API_SEARCH_LOG (
+                search_id, query_text, top_k, error_message
+            ) VALUES (
+                l_search_id, p_query_text, p_top_k, SQLERRM
+            );
+            COMMIT;
+        EXCEPTION
+            WHEN OTHERS THEN
+                NULL;
+        END;
+        
+        p_result_json := JSON_OBJECT(
+            'error' VALUE 'Unexpected error: ' || SQLERRM,
+            'search_id' VALUE l_search_id
+        );
+END GET_SEMANTIC_RECOMMENDATIONS;
+/
+```
+
+#### 7.3. Create Monitoring Queries
+
+```sql
+-- View recent search activity
+SELECT 
+    log_id,
+    search_id,
+    SUBSTR(query_text, 1, 50) AS query_preview,
+    response_time_ms,
+    result_count,
+    request_timestamp
+FROM API_SEARCH_LOG
+ORDER BY request_timestamp DESC
+FETCH FIRST 20 ROWS ONLY;
+
+-- Performance statistics
+SELECT 
+    COUNT(*) AS total_searches,
+    ROUND(AVG(response_time_ms), 2) AS avg_response_ms,
+    ROUND(MAX(response_time_ms), 2) AS max_response_ms,
+    ROUND(MIN(response_time_ms), 2) AS min_response_ms,
+    COUNT(CASE WHEN error_message IS NOT NULL THEN 1 END) AS errors
+FROM API_SEARCH_LOG
+WHERE request_timestamp >= SYSTIMESTAMP - INTERVAL '24' HOUR;
+
+-- Error analysis
+SELECT 
+    error_message,
+    COUNT(*) AS occurrence_count,
+    MAX(request_timestamp) AS last_occurrence
+FROM API_SEARCH_LOG
+WHERE error_message IS NOT NULL
+GROUP BY error_message
+ORDER BY occurrence_count DESC;
+```
+
+---
+
+## 5. Troubleshooting Guide
+
+### 5.1. Common Issues
+
+| Issue | Possible Cause | Solution |
+|-------|---------------|----------|
+| ORDS won't start | Port already in use | Change port in ORDS config or kill existing process |
+| 404 Not Found | Module/template not created | Verify ORDS configuration with queries in Step 4 |
+| 500 Internal Error | PL/SQL procedure error | Check alert.log and trace files in database |
+| Slow response times | Inefficient vector search | Verify HNSW index exists, gather statistics |
+| Connection timeout | ORDS not accessible | Check firewall rules, verify ORDS is running |
+
+### 5.2. Debugging Commands
+
+```sql
+-- Check ORDS schema status
+SELECT * FROM user_ords_schemas;
+
+-- Check all modules
+SELECT * FROM user_ords_modules;
+
+-- Check all templates
+SELECT * FROM user_ords_templates;
+
+-- Check all handlers
+SELECT * FROM user_ords_handlers;
+
+-- View ORDS privileges
+SELECT * FROM user_ords_privileges;
+```
+
+### 5.3. ORDS Logs
+
+```bash
+# View ORDS logs
+tail -f /opt/oracle/ords/logs/ords.log
+
+# Check for errors
+grep ERROR /opt/oracle/ords/logs/ords.log
+```
+
+---
+
+## 6. Performance Tuning
+
+### 6.1. Connection Pool Tuning
+
+Edit `/opt/oracle/ords/config/databases/default/pool.xml`:
+
+```xml
+<pool>
+  <min-limit>5</min-limit>
+  <max-limit>50</max-limit>
+  <max-statements>20</max-statements>
+</pool>
+```
+
+### 6.2. Enable ORDS Caching
+
+```sql
+-- Enable result caching
+ALTER PROCEDURE GET_SEMANTIC_RECOMMENDATIONS COMPILE;
+
+-- Use result cache hint in queries (if appropriate)
+```
+
+---
+
+## 7. Next Steps
+
+Once this TDD is complete, proceed to:
+- **TDD 4**: Integrate the API into Siebel CRM Open UI
+- Use the API endpoint URL and authentication details from this setup
+- The API is now ready to be called from Siebel eScript

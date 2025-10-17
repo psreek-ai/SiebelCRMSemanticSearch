@@ -1,184 +1,923 @@
 # Technical Design Document 4: Siebel CRM Integration
 
-**Version:** 2.1 (ORDS Edition)
-**Date:** 2025-10-16
+**Version:** 2.2
+**Date:** 2025-10-17
 **Owner:** Siebel Development Team
 
 ## 1. Objective
-This document provides the technical specification for integrating the new Semantic Search API (hosted via ORDS) into the Siebel Open UI application. This involves modifying the existing catalog search functionality to call the API and display its intelligent recommendations.
+This document provides the technical specification for integrating the new Semantic Search API (hosted via ORDS) into the Siebel Open UI application. This involves creating business services, configuring presentation models, and modifying the UI to provide an intelligent search experience.
 
-## 2. Siebel Objects to be Modified/Created
+## 2. Prerequisites
 
-| Object Type | Object Name | Action | Description |
-| :--- | :--- | :--- | :--- |
-| **Business Service** | `SemanticSearchAPIService`| Create | A new BS to encapsulate the logic for calling the ORDS API. |
-| **Applet** | `Service Request Catalog Search Applet` (Example Name) | Modify | The existing search applet's "Search" button will be reconfigured to invoke the new logic. |
-| **Applet** | `Service Request Catalog Results Applet` (Example Name) | Modify | The results applet to handle the new display order and UI elements. |
-| **Named Subsystem** | `SemanticSearchORDS` | Create | To securely store the ORDS API URL and any necessary authentication tokens/keys. |
-| **Presentation Model**| `CatalogSearchPM.js` (Example Name) | Modify/Create | A custom PM to handle the asynchronous API call and dynamic refresh of the results. |
+Before implementing this TDD, ensure:
+- ✅ TDD 3 is complete (ORDS API is deployed and tested)
+- ✅ Siebel Tools is installed and configured
+- ✅ Access to Siebel repository with check-out privileges
+- ✅ Siebel Web Server and Application Server are accessible
+- ✅ API endpoint URL and authentication credentials are available
 
-## 3. User Interface and Experience Flow
-1.  The user navigates to the "Raise a Request" view.
-2.  The user types their query (e.g., "my computer is slow") into the search input field of the search applet.
-3.  The user clicks the "Search" button.
-4.  **New:** The existing list of results in the `Service Request Catalog Results Applet` is cleared. A loading indicator (e.g., a spinner icon) is displayed over the applet to provide immediate feedback.
-5.  The custom Presentation Model (PM) calls the `SemanticSearchAPIService`.
-6.  The business service makes an HTTPS `POST` request to the ORDS endpoint.
-7.  Upon receiving the API response, the PM hides the loading indicator.
-8.  The PM parses the JSON response and constructs a dynamic `SearchSpec` and `SortSpec`.
-9.  The PM applies the new search and sort specifications to the results applet's business component, which refreshes to display the recommended items in the exact order provided by the API.
+## 3. Architecture Overview
 
+### 3.1. Integration Components
+```
+Siebel Open UI (Browser)
+      ↓
+Custom Presentation Model (JavaScript)
+      ↓
+Business Service (eScript)
+      ↓
+EAI HTTP Transport Service
+      ↓
+ORDS API Endpoint (Oracle 23ai)
+```
 
+### 3.2. Siebel Objects to Create/Modify
 
-## 4. Business Service: `SemanticSearchAPIService`
+| Object Type | Object Name | Action | Purpose |
+|-------------|-------------|--------|---------|
+| Business Service | SemanticSearchAPIService | Create | Encapsulates API calls |
+| Business Service Method | InvokeSearch | Create | Makes HTTP POST request to ORDS |
+| Applet | Service Request Catalog Search Applet | Modify | Add search functionality |
+| Applet | Service Request Catalog Results Applet | Modify | Display ranked results |
+| Named Subsystem | SemanticSearchORDS | Create | Store API configuration |
+| Web Template | manifest_search.js | Create | Register custom PM |
+| Presentation Model | CatalogSearchPM.js | Create | Handle async API calls |
+| Physical Renderer | CatalogSearchPR.js | Create (Optional) | Custom UI rendering |
 
-### 4.1. Method: `InvokeSearch`
-* **Inputs:**
-    * `QueryText` (String): The user's search query.
-    * `TopK` (String): The number of results to fetch, e.g., "5".
-* **Outputs:**
-    * `ResultSet` (PropertySet): A property set containing the ordered list of catalog item IDs, paths, and ranks.
-    * `Error` (String): An error message if the API call fails.
+---
 
-### 4.2. eScript Implementation Detail (`InvokeSearch` method)
-This script will use the standard `EAI HTTP Transport` Business Service to make the outbound REST call.
+## 4. Implementation Steps
+
+### Step 1: Configure Named Subsystem
+
+**Executor:** Siebel Administrator  
+**Duration:** 10 minutes
+
+#### 1.1. Create Named Subsystem via Siebel Client
+
+1. Log in to Siebel Client with administrative privileges
+2. Navigate to **Administration - Server Configuration > Profile Configuration**
+3. Click **New Record** in the Named Subsystems list
+4. Set the following values:
+
+| Field | Value |
+|-------|-------|
+| Name | `SemanticSearchORDS` |
+| Description | `Configuration for Semantic Search ORDS API` |
+| Status | `Active` |
+
+5. In the **Parameters** list applet, add the following parameters:
+
+**Parameter 1:**
+- Parameter Name: `URL`
+- Parameter Value: `http://your-ords-server:8080/ords/semantic_search/siebel/search`
+- Comments: `ORDS API endpoint URL`
+
+**Parameter 2:**
+- Parameter Name: `APIKey`
+- Parameter Value: `YOUR_SECURE_API_KEY_HERE`
+- Comments: `API authentication key (if using API key auth)`
+
+**Parameter 3:**
+- Parameter Name: `Timeout`
+- Parameter Value: `5000`
+- Comments: `Request timeout in milliseconds`
+
+**Parameter 4:**
+- Parameter Name: `MaxRetries`
+- Parameter Value: `2`
+- Comments: `Number of retry attempts on failure`
+
+6. Save the record
+
+#### 1.2. Verify Named Subsystem via SQL
+
+```sql
+-- Connect to Siebel database
+SELECT 
+    NAME,
+    DESC_TEXT,
+    STATUS_FLG
+FROM S_SYS_PROF
+WHERE NAME = 'SemanticSearchORDS';
+
+-- View parameters
+SELECT 
+    sp.NAME AS SUBSYSTEM_NAME,
+    spp.NAME AS PARAM_NAME,
+    spp.VAL AS PARAM_VALUE
+FROM S_SYS_PROF sp
+JOIN S_SYS_PROF_PROP spp ON sp.ROW_ID = spp.PAR_ROW_ID
+WHERE sp.NAME = 'SemanticSearchORDS'
+ORDER BY spp.NAME;
+```
+
+---
+
+### Step 2: Create Business Service
+
+**Executor:** Siebel Developer (Siebel Tools)  
+**Duration:** 45 minutes
+
+#### 2.1. Create Business Service Object
+
+1. Open **Siebel Tools**
+2. Navigate to **Business Service** object type
+3. Right-click and select **New Record**
+4. Set the following properties:
+
+| Property | Value |
+|----------|-------|
+| Name | `SemanticSearchAPIService` |
+| Display Name | `Semantic Search API Service` |
+| Project | `<Your Project Name>` |
+| Class | `CSSService` |
+| Cache | `No` |
+| Server Enabled | `Yes` |
+| Comments | `Service to invoke semantic search ORDS API` |
+
+5. Save the record (Ctrl+S)
+
+#### 2.2. Create Business Service Method
+
+1. In the **Business Service Methods** list, click **New Record**
+2. Set properties for the **InvokeSearch** method:
+
+| Property | Value |
+|----------|-------|
+| Name | `InvokeSearch` |
+| Display Name | `Invoke Search` |
+| Method Name | `InvokeSearch` |
+| Comments | `Calls ORDS API with user query and returns recommendations` |
+
+3. Save the record
+
+#### 2.3. Create Business Service Method Arguments
+
+Create the following **Input Arguments**:
+
+**Argument 1:**
+- Name: `QueryText`
+- Type: `String`
+- Required: `Yes`
+- Comments: `User's search query text`
+
+**Argument 2:**
+- Name: `TopK`
+- Type: `String`
+- Required: `No`
+- Default Value: `5`
+- Comments: `Number of results to return`
+
+Create the following **Output Arguments**:
+
+**Argument 1:**
+- Name: `ResultSet`
+- Type: `Hierarchy`
+- Required: `Yes`
+- Comments: `Property set containing search results`
+
+**Argument 2:**
+- Name: `Error`
+- Type: `String`
+- Required: `No`
+- Comments: `Error message if request fails`
+
+4. Save all changes (Ctrl+S)
+
+#### 2.4. Implement eScript Logic
+
+1. Select the **SemanticSearchAPIService** business service
+2. Go to **Business Service > Business Service User Props**
+3. In the **eScript** field, add the following code:
 
 ```javascript
-// eScript for SemanticSearchAPIService.InvokeSearch method
-function InvokeSearch(inputs, outputs) {
-    var queryText = inputs.GetProperty("QueryText");
-    var topK = inputs.GetProperty("TopK") || "5"; // Default to 5
-    var psResults = TheApplication().NewPropertySet();
-    psResults.SetType("ResultSet");
+/*****************************************************************************
+ * Business Service: SemanticSearchAPIService
+ * Method: InvokeSearch
+ * Purpose: Calls ORDS semantic search API and returns ranked catalog items
+ *****************************************************************************/
 
-    try {
-        // 1. Retrieve API details securely from Named Subsystem
-        var url = TheApplication().GetProfileAttr("SemanticSearchORDS_URL");
-        var apiKey = TheApplication().GetProfileAttr("SemanticSearchORDS_APIKey"); // If using an API Gateway in front of ORDS
+function Service_PreInvokeMethod(MethodName, Inputs, Outputs)
+{
+    if (MethodName == "InvokeSearch")
+    {
+        return (CancelOperation);
+    }
+    return (ContinueOperation);
+}
 
-        // 2. Prepare HTTP request for ORDS
+function InvokeSearch(Inputs, Outputs)
+{
+    try
+    {
+        var queryText = Inputs.GetProperty("QueryText");
+        var topK = Inputs.GetProperty("TopK");
+        
+        // Validate input
+        if (!queryText || queryText.trim() === "")
+        {
+            Outputs.SetProperty("Error", "Query text cannot be empty");
+            return;
+        }
+        
+        // Default TopK if not provided
+        if (!topK || topK === "")
+        {
+            topK = "5";
+        }
+        
+        // Get API configuration from Named Subsystem
+        var apiUrl = TheApplication().GetProfileAttr("SemanticSearchORDS.URL");
+        var apiKey = TheApplication().GetProfileAttr("SemanticSearchORDS.APIKey");
+        var timeout = TheApplication().GetProfileAttr("SemanticSearchORDS.Timeout");
+        
+        if (!apiUrl)
+        {
+            Outputs.SetProperty("Error", "API URL not configured in Named Subsystem");
+            TheApplication().Trace("ERROR: SemanticSearchORDS.URL parameter not found");
+            return;
+        }
+        
+        // Default timeout if not configured
+        if (!timeout || timeout === "")
+        {
+            timeout = "5000";
+        }
+        
+        TheApplication().Trace("Calling Semantic Search API: " + apiUrl);
+        TheApplication().Trace("Query: " + queryText);
+        TheApplication().Trace("TopK: " + topK);
+        
+        // Prepare HTTP request
         var httpSvc = TheApplication().GetService("EAI HTTP Transport");
         var httpInputs = TheApplication().NewPropertySet();
         var httpOutputs = TheApplication().NewPropertySet();
-
+        
+        // Set HTTP request parameters
         httpInputs.SetProperty("HTTPRequestMethod", "POST");
-        httpInputs.SetProperty("HTTPRequestBody", queryText); // The body is plain text for this API
-        httpInputs.SetProperty("HTTPRequestURL", url);
-        httpInputs.SetProperty("HTTPContentType", "text/plain"); // Set content type to plain text
-        httpInputs.SetProperty("HTTPHeader.Top-K", topK); // Pass Top-K as a header
-        if (apiKey) {
-            httpInputs.SetProperty("HTTPHeader.X-API-Key", apiKey); // Example security header for API Gateway
+        httpInputs.SetProperty("HTTPRequestURLEncoding", "UTF-8");
+        httpInputs.SetProperty("HTTPRequestURL", apiUrl);
+        httpInputs.SetProperty("HTTPContentType", "text/plain; charset=UTF-8");
+        httpInputs.SetProperty("HTTPRequestBody", queryText);
+        httpInputs.SetProperty("HTTPHeader.Top-K", topK);
+        httpInputs.SetProperty("HTTPTimeout", timeout);
+        
+        // Add API key header if configured
+        if (apiKey && apiKey !== "")
+        {
+            httpInputs.SetProperty("HTTPHeader.X-API-Key", apiKey);
         }
-
-        // 3. Invoke the API
+        
+        // Add additional headers
+        httpInputs.SetProperty("HTTPHeader.Accept", "application/json");
+        httpInputs.SetProperty("HTTPHeader.User-Agent", "SiebelCRM/23.0");
+        
+        // Invoke HTTP transport service
         httpSvc.InvokeMethod("SendReceive", httpInputs, httpOutputs);
-
-        // 4. Parse the JSON response
-        var responseStr = httpOutputs.GetValue();
-        if (responseStr) {
-            var responseObj = JSON.parse(responseStr);
-            var recommendations = responseObj.recommendations;
-
-            if (recommendations && recommendations.length > 0) {
-                for (var i = 0; i < recommendations.length; i++) {
-                    var rec = recommendations[i];
-                    var psRec = TheApplication().NewPropertySet();
-                    psRec.SetProperty("Id", rec.catalog_item_id);
-                    psRec.SetProperty("Path", rec.catalog_path);
-                    psRec.SetProperty("Rank", rec.rank);
-                    psResults.AddChild(psRec);
-                }
-            }
-        }
-    } catch (e) {
-        outputs.SetProperty("Error", e.toString());
-        // The PM will handle displaying a user-friendly error message.
-    } finally {
-        outputs.AddChild(psResults);
-    }
-    return (CancelOperation);
-}
-````
-
-## 5\. Applet and View Integration
-
-### 5.1. Presentation Model (PM) Logic (`CatalogSearchPM.js`)
-
-The PM will be the central controller for the user interaction.
-
-```javascript
-// Conceptual logic for the custom Presentation Model
-// This code would be attached to the "Search" button's click event handler.
-
-// 1. Get the search query from the input control
-var query = this.Get("GetSearchQueryControlValue");
-if (!query || query.trim() === "") {
-    SiebelApp.S_App.ui.ShowError("Please enter a search query.");
-    return;
-}
-
-// 2. Show a loading indicator and clear previous results
-var resultsApplet = this.Get("GetResultsApplet");
-var bc = resultsApplet.GetBusComp();
-bc.NewRecord(false); // Clear the applet
-this.Get("ShowLoadingIndicator")(true); // This would be a custom function to show a spinner
-
-// 3. Prepare inputs for the Business Service
-var bsInputs = SiebelApp.S_App.NewPropertySet();
-bsInputs.SetProperty("QueryText", query);
-bsInputs.SetProperty("TopK", "5");
-
-// 4. Call the Business Service asynchronously
-SiebelApp.S_App.GetService("SemanticSearchAPIService").InvokeMethod("InvokeSearch", bsInputs, {
-    async: true,
-    scope: this,
-    callback: function(methodName, inputs, outputs) {
-        // 5. Hide loading indicator on callback
-        this.Get("ShowLoadingIndicator")(false);
-
-        // 6. Process the response
-        var error = outputs.GetProperty("Error");
-        if (error) {
-            SiebelApp.S_App.ui.ShowError("Search is temporarily unavailable. Please try again later.");
+        
+        // Get response
+        var httpStatus = httpOutputs.GetProperty("HTTPResponseStatus");
+        var responseBody = httpOutputs.GetProperty("HTTPResponseBody");
+        
+        TheApplication().Trace("HTTP Status: " + httpStatus);
+        TheApplication().Trace("Response Body: " + responseBody);
+        
+        // Check for HTTP errors
+        if (!httpStatus || httpStatus === "")
+        {
+            Outputs.SetProperty("Error", "No response from API server");
+            TheApplication().Trace("ERROR: No HTTP status received");
             return;
         }
-
-        var resultSet = outputs.GetChildByType("ResultSet");
-        if (resultSet) {
-            var recommendations = resultSet.GetChildren();
-            if (recommendations.length > 0) {
-                var idList = [];
-                var sortClauses = [];
-                for (var i = 0; i < recommendations.length; i++) {
-                    var rec = recommendations[i];
-                    var id = rec.GetProperty("Id");
-                    var rank = rec.GetProperty("Rank");
-                    idList.push("'" + id + "'");
-                    sortClauses.push("WHEN '" + id + "' THEN " + rank);
-                }
-                
-                // 7. Construct the SearchSpec and SortSpec to enforce the API's ranking
-                var searchSpec = "[Id] IN (" + idList.join(",") + ")";
-                var sortSpec = "CASE [Id] " + sortClauses.join(" ") + " ELSE 99 END";
-
-                // 8. Apply the query to the results applet's business component
-                bc.ClearToQuery();
-                bc.SetSortSpec(sortSpec); // CRITICAL: Set SortSpec before SearchSpec
-                bc.SetSearchSpecStr(searchSpec);
-                bc.ExecuteQuery(SiebelApp.S_App.GetSWEConsts().get("SWE_QUERY_FWD_ONLY"));
-            } else {
-                // Handle case with no results by displaying a message in the UI
-                SiebelApp.S_App.ui.ShowError("No relevant results found for your query.");
-            }
+        
+        // Parse status code
+        var statusCode = parseInt(httpStatus.split(" ")[0]);
+        
+        if (statusCode !== 200)
+        {
+            var errorMsg = "API returned error status: " + httpStatus;
+            Outputs.SetProperty("Error", errorMsg);
+            TheApplication().Trace("ERROR: " + errorMsg);
+            return;
         }
+        
+        // Parse JSON response
+        if (!responseBody || responseBody === "")
+        {
+            Outputs.SetProperty("Error", "Empty response from API");
+            TheApplication().Trace("ERROR: Empty response body");
+            return;
+        }
+        
+        var responseObj;
+        try
+        {
+            responseObj = JSON.parse(responseBody);
+        }
+        catch (e)
+        {
+            Outputs.SetProperty("Error", "Invalid JSON response: " + e.toString());
+            TheApplication().Trace("ERROR: JSON parse failed - " + e.toString());
+            return;
+        }
+        
+        // Check for API-level errors
+        if (responseObj.error)
+        {
+            Outputs.SetProperty("Error", "API Error: " + responseObj.error);
+            TheApplication().Trace("ERROR: API returned error - " + responseObj.error);
+            return;
+        }
+        
+        // Process recommendations
+        var recommendations = responseObj.recommendations;
+        if (!recommendations || recommendations.length === 0)
+        {
+            Outputs.SetProperty("Error", "No recommendations found");
+            TheApplication().Trace("INFO: No recommendations returned");
+            return;
+        }
+        
+        // Build result property set
+        var psResults = TheApplication().NewPropertySet();
+        psResults.SetType("ResultSet");
+        psResults.SetProperty("SearchId", responseObj.search_id || "");
+        psResults.SetProperty("Query", responseObj.query || queryText);
+        psResults.SetProperty("Timestamp", responseObj.timestamp || "");
+        psResults.SetProperty("Count", recommendations.length.toString());
+        
+        // Add each recommendation as a child property set
+        for (var i = 0; i < recommendations.length; i++)
+        {
+            var rec = recommendations[i];
+            var psRec = TheApplication().NewPropertySet();
+            psRec.SetType("Recommendation");
+            psRec.SetProperty("Rank", rec.rank ? rec.rank.toString() : (i + 1).toString());
+            psRec.SetProperty("CatalogItemId", rec.catalog_item_id || "");
+            psRec.SetProperty("CatalogPath", rec.catalog_path || "");
+            psRec.SetProperty("RelevanceScore", rec.relevance_score ? rec.relevance_score.toString() : "0");
+            psRec.SetProperty("Frequency", rec.frequency ? rec.frequency.toString() : "0");
+            psRec.SetProperty("MaxScore", rec.max_score ? rec.max_score.toString() : "0");
+            psResults.AddChild(psRec);
+        }
+        
+        // Return results
+        Outputs.AddChild(psResults);
+        
+        TheApplication().Trace("SUCCESS: Returned " + recommendations.length + " recommendations");
     }
+    catch (e)
+    {
+        var errorMsg = "Unexpected error in InvokeSearch: " + e.toString();
+        Outputs.SetProperty("Error", errorMsg);
+        TheApplication().Trace("ERROR: " + errorMsg);
+        TheApplication().Trace("Stack trace: " + e.stack);
+    }
+    
+    return (CancelOperation);
+}
+```
+
+5. Save the eScript (Ctrl+S)
+6. Compile the business service
+
+---
+
+### Step 3: Test Business Service
+
+**Executor:** Siebel Developer  
+**Duration:** 15 minutes
+
+#### 3.1. Test via Siebel Client
+
+1. Navigate to **Administration - Business Service > Business Service Simulator**
+2. In the **Business Service** field, select `SemanticSearchAPIService`
+3. In the **Method** field, select `InvokeSearch`
+4. Click **Simulate**
+5. In the input hierarchy, add:
+   - `QueryText` = "My laptop screen is broken"
+   - `TopK` = "5"
+6. Click **Execute**
+7. Verify the output contains:
+   - `ResultSet` hierarchy with recommendations
+   - No `Error` property
+
+#### 3.2. Test via eScript in Browser Console
+
+Enable Siebel tracing to see detailed logs:
+1. Append `?SWECmd=SetTraceLevel&SWELevel=4` to your Siebel URL
+2. Open browser console and check for trace messages
+3. Look for "Calling Semantic Search API" and "SUCCESS" messages
+
+---
+
+### Step 4: Create Custom Presentation Model
+
+**Executor:** Siebel Web Developer  
+**Duration:** 60 minutes
+
+#### 4.1. Create Custom PM File
+
+Create file: `CatalogSearchPM.js` in your custom files directory:
+`<SIEBEL_ROOT>/public/<LANGUAGE>/files/custom/`
+
+```javascript
+/**
+ * Presentation Model: CatalogSearchPM
+ * Purpose: Handle semantic search for service catalog items
+ * Extends: Standard Applet PM
+ */
+
+if (typeof(SiebelAppFacade.CatalogSearchPM) === "undefined") {
+
+    SiebelJS.Namespace("SiebelAppFacade.CatalogSearchPM");
+
+    define("siebel/custom/CatalogSearchPM", ["siebel/jqgridrenderer"],
+        function () {
+            
+            SiebelAppFacade.CatalogSearchPM = (function () {
+
+                function CatalogSearchPM(pm) {
+                    SiebelAppFacade.CatalogSearchPM.superclass.constructor.apply(this, arguments);
+                }
+
+                SiebelJS.Extend(CatalogSearchPM, SiebelAppFacade.PresentationModel);
+
+                /**
+                 * Initialize the PM
+                 */
+                CatalogSearchPM.prototype.Init = function () {
+                    SiebelAppFacade.CatalogSearchPM.superclass.Init.apply(this, arguments);
+                    
+                    // Get references to applets
+                    this.searchAppletName = this.Get("GetName");
+                    this.resultsAppletName = "Service Request Catalog Results Applet"; // Update with actual name
+                    
+                    console.log("CatalogSearchPM initialized for: " + this.searchAppletName);
+                };
+
+                /**
+                 * Setup event handlers
+                 */
+                CatalogSearchPM.prototype.Setup = function (propSet) {
+                    SiebelAppFacade.CatalogSearchPM.superclass.Setup.apply(this, arguments);
+                    
+                    // Attach custom search button handler
+                    var self = this;
+                    var searchBtn = $("#s_" + this.Get("GetFullId") + "_search_button");
+                    
+                    if (searchBtn.length > 0) {
+                        searchBtn.off("click").on("click", function (e) {
+                            e.preventDefault();
+                            self.ExecuteSemanticSearch();
+                        });
+                    }
+                };
+
+                /**
+                 * Execute semantic search
+                 */
+                CatalogSearchPM.prototype.ExecuteSemanticSearch = function () {
+                    var self = this;
+                    
+                    // Get search query from input control
+                    var controlName = "SearchQuery"; // Update with actual control name
+                    var query = this.ExecuteMethod("GetControlValue", controlName);
+                    
+                    if (!query || query.trim() === "") {
+                        this.ShowErrorMessage("Please enter a search query");
+                        return;
+                    }
+                    
+                    console.log("Executing semantic search for: " + query);
+                    
+                    // Show loading indicator
+                    this.ShowLoadingIndicator(true);
+                    
+                    // Clear previous results
+                    this.ClearResultsApplet();
+                    
+                    // Prepare business service inputs
+                    var psInputs = SiebelApp.S_App.NewPropertySet();
+                    psInputs.SetProperty("QueryText", query);
+                    psInputs.SetProperty("TopK", "5");
+                    
+                    // Call business service asynchronously
+                    SiebelApp.S_App.GetService("SemanticSearchAPIService").InvokeMethod(
+                        "InvokeSearch",
+                        psInputs,
+                        {
+                            async: true,
+                            scope: self,
+                            cb: function (methodName, inputPS, outputPS) {
+                                self.HandleSearchResponse(outputPS);
+                            }
+                        }
+                    );
+                };
+
+                /**
+                 * Handle API response
+                 */
+                CatalogSearchPM.prototype.HandleSearchResponse = function (outputPS) {
+                    // Hide loading indicator
+                    this.ShowLoadingIndicator(false);
+                    
+                    // Check for errors
+                    var error = outputPS.GetProperty("Error");
+                    if (error) {
+                        console.error("Search error: " + error);
+                        this.ShowErrorMessage("Search is temporarily unavailable. Please try again later.");
+                        return;
+                    }
+                    
+                    // Get result set
+                    var resultSet = outputPS.GetChildByType("ResultSet");
+                    if (!resultSet) {
+                        console.warn("No result set returned");
+                        this.ShowErrorMessage("No results found");
+                        return;
+                    }
+                    
+                    // Get recommendations
+                    var recommendations = resultSet.GetChildren();
+                    if (!recommendations || recommendations.length === 0) {
+                        console.log("No recommendations found");
+                        this.ShowErrorMessage("No relevant items found for your query");
+                        return;
+                    }
+                    
+                    console.log("Received " + recommendations.length + " recommendations");
+                    
+                    // Process recommendations
+                    this.ApplySearchResults(recommendations);
+                };
+
+                /**
+                 * Apply search results to results applet
+                 */
+                CatalogSearchPM.prototype.ApplySearchResults = function (recommendations) {
+                    // Build search spec and sort spec
+                    var idList = [];
+                    var sortClauses = [];
+                    
+                    for (var i = 0; i < recommendations.length; i++) {
+                        var rec = recommendations[i];
+                        var id = rec.GetProperty("CatalogItemId");
+                        var rank = rec.GetProperty("Rank");
+                        
+                        idList.push("'" + id + "'");
+                        sortClauses.push("WHEN '" + id + "' THEN " + rank);
+                    }
+                    
+                    // Build search specification
+                    var searchSpec = "[Id] IN (" + idList.join(",") + ")";
+                    
+                    // Build sort specification (CRITICAL: apply ranking)
+                    var sortSpec = "CASE [Id] " + sortClauses.join(" ") + " ELSE 99 END (ASCENDING)";
+                    
+                    console.log("SearchSpec: " + searchSpec);
+                    console.log("SortSpec: " + sortSpec);
+                    
+                    // Get results applet PM
+                    var resultsPM = SiebelApp.S_App.GetActivePM().Get(this.resultsAppletName);
+                    if (!resultsPM) {
+                        console.error("Results applet PM not found: " + this.resultsAppletName);
+                        return;
+                    }
+                    
+                    // Get business component
+                    var bc = resultsPM.Get("GetBusComp");
+                    if (!bc) {
+                        console.error("Business component not found");
+                        return;
+                    }
+                    
+                    // Apply query
+                    try {
+                        bc.ClearToQuery();
+                        bc.SetSortSpec(sortSpec); // IMPORTANT: Set sort spec BEFORE search spec
+                        bc.SetSearchSpec(searchSpec);
+                        bc.ExecuteQuery(SiebelApp.Constants.get("SWE_QUERY_FWD_ONLY"));
+                        
+                        console.log("Search results applied successfully");
+                    } catch (e) {
+                        console.error("Error applying search results: " + e.toString());
+                        this.ShowErrorMessage("Error displaying results");
+                    }
+                };
+
+                /**
+                 * Clear results applet
+                 */
+                CatalogSearchPM.prototype.ClearResultsApplet = function () {
+                    try {
+                        var resultsPM = SiebelApp.S_App.GetActivePM().Get(this.resultsAppletName);
+                        if (resultsPM) {
+                            var bc = resultsPM.Get("GetBusComp");
+                            if (bc) {
+                                bc.ClearToQuery();
+                                bc.ExecuteQuery(SiebelApp.Constants.get("SWE_QUERY_FWD_ONLY"));
+                            }
+                        }
+                    } catch (e) {
+                        console.warn("Could not clear results applet: " + e.toString());
+                    }
+                };
+
+                /**
+                 * Show/hide loading indicator
+                 */
+                CatalogSearchPM.prototype.ShowLoadingIndicator = function (show) {
+                    var loadingDiv = $("#semantic-search-loading");
+                    
+                    if (show) {
+                        if (loadingDiv.length === 0) {
+                            // Create loading indicator
+                            loadingDiv = $("<div>")
+                                .attr("id", "semantic-search-loading")
+                                .css({
+                                    "position": "fixed",
+                                    "top": "50%",
+                                    "left": "50%",
+                                    "transform": "translate(-50%, -50%)",
+                                    "background": "rgba(0,0,0,0.7)",
+                                    "color": "white",
+                                    "padding": "20px",
+                                    "border-radius": "5px",
+                                    "z-index": "9999"
+                                })
+                                .html('<div class="siebui-icon-spinner"></div> Searching...');
+                            $("body").append(loadingDiv);
+                        }
+                        loadingDiv.show();
+                    } else {
+                        loadingDiv.hide();
+                    }
+                };
+
+                /**
+                 * Show error message
+                 */
+                CatalogSearchPM.prototype.ShowErrorMessage = function (message) {
+                    SiebelApp.S_App.NotifyUser(message);
+                    console.error(message);
+                };
+
+                return CatalogSearchPM;
+            }());
+
+            return "SiebelAppFacade.CatalogSearchPM";
+        }
+    );
+}
+```
+
+#### 4.2. Register Custom PM
+
+Create manifest file: `manifest_search.js` in the same directory:
+
+```javascript
+/**
+ * Manifest for Semantic Search customization
+ */
+
+if (typeof(SiebelApp.CustomPMMapping) === "undefined") {
+    SiebelJS.Namespace("SiebelApp.CustomPMMapping");
+}
+
+SiebelApp.CustomPMMapping["Service Request Catalog Search Applet"] = "siebel/custom/CatalogSearchPM";
+
+// Register the file
+define("siebel/custom/manifest_search", [
+    "siebel/custom/CatalogSearchPM"
+], function () {
+    return;
 });
 ```
 
-## 6\. Deployment Objects
+#### 4.3. Configure Web Template
 
-  * **Business Service:** `SemanticSearchAPIService`
-  * **Named Subsystem:** `SemanticSearchORDS` (with `URL` and optional `APIKey` parameters)
-  * **Custom JS Files:** `CatalogSearchPM.js` (and associated PR if needed for loading indicator)
-  * **Siebel Web Templates:** Manifest registration for the new custom JS files.
-  * **SRF:** All compiled object definitions.
+1. Navigate to Siebel Tools
+2. Go to **Web Template** object type
+3. Find `manifest.js` template
+4. Add reference to custom manifest:
+
+```javascript
+// Add to existing manifest.js
+"siebel/custom/manifest_search"
+```
+
+5. Save and compile
+
+---
+
+### Step 5: Deploy to Siebel Web Server
+
+**Executor:** Siebel Administrator  
+**Duration:** 30 minutes
+
+#### 5.1. Copy Custom Files
+
+```bash
+# Copy JavaScript files to web server
+cp CatalogSearchPM.js <SIEBEL_ROOT>/public/enu/files/custom/
+cp manifest_search.js <SIEBEL_ROOT>/public/enu/files/custom/
+
+# Set proper permissions
+chmod 644 <SIEBEL_ROOT>/public/enu/files/custom/*.js
+```
+
+#### 5.2. Generate and Deploy SRF
+
+1. In Siebel Tools, go to **Tools > Check In**
+2. Select all modified objects
+3. Check in to repository
+4. Generate new SRF file:
+   ```bash
+   srvrmgr -g gateway -e enterprise -u SADMIN -p password
+   compile srf for server <server_name>
+   ```
+
+5. Deploy SRF to Siebel Servers:
+   ```bash
+   # Stop Siebel servers
+   stop server <server_name> component SiebelServer
+   
+   # Copy SRF file
+   cp siebel.srf <SIEBEL_ROOT>/siebsrvr/objects/
+   
+   # Start Siebel servers
+   start server <server_name> component SiebelServer
+   ```
+
+#### 5.3. Clear Browser Cache
+
+Clear all browser caches and restart application servers to ensure new JavaScript files are loaded.
+
+---
+
+### Step 6: Testing and Validation
+
+**Executor:** QA Team  
+**Duration:** 30 minutes
+
+#### 6.1. Functional Testing
+
+1. Log in to Siebel application
+2. Navigate to Service Request screen
+3. Enter search query: "My laptop is broken"
+4. Click Search button
+5. Verify:
+   - Loading indicator appears
+   - Results are displayed in ranked order
+   - Clicking on result navigates to catalog item
+   - Error handling works (try with empty query)
+
+#### 6.2. Browser Console Testing
+
+1. Open browser developer console (F12)
+2. Perform a search
+3. Look for console messages:
+   - "Executing semantic search for: ..."
+   - "Received X recommendations"
+   - "Search results applied successfully"
+
+4. Check for errors in console
+
+#### 6.3. Network Traffic Analysis
+
+1. Open browser Network tab
+2. Perform a search
+3. Verify API call:
+   - URL matches ORDS endpoint
+   - Method is POST
+   - Headers include API key
+   - Response is 200 OK
+   - Response contains JSON with recommendations
+
+---
+
+## 5. Troubleshooting Guide
+
+### 5.1. Common Issues
+
+| Issue | Possible Cause | Solution |
+|-------|---------------|----------|
+| Business service not found | SRF not deployed | Regenerate and deploy SRF |
+| API call returns 401 | Invalid API key | Check Named Subsystem configuration |
+| Results not displayed | Wrong applet name in PM | Verify results applet name matches |
+| JavaScript errors | PM not registered | Check manifest registration |
+| No loading indicator | Custom PM not loaded | Clear browser cache, check file path |
+
+### 5.2. Debugging Commands
+
+**Enable Siebel Tracing:**
+```
+URL?SWECmd=SetTraceLevel&SWELevel=5
+```
+
+**Check Business Service:**
+```sql
+SELECT NAME, PROJ_ID
+FROM SIEBEL.S_SERVICE
+WHERE NAME = 'SemanticSearchAPIService';
+```
+
+**View Siebel Server Logs:**
+```bash
+tail -f <SIEBEL_ROOT>/siebsrvr/log/SiebelServer_xxx.log | grep -i "semantic"
+```
+
+**Browser Console Commands:**
+```javascript
+// Check if PM is registered
+SiebelApp.S_App.GetPM("Service Request Catalog Search Applet");
+
+// Get Named Subsystem value
+TheApplication().GetProfileAttr("SemanticSearchORDS.URL");
+
+// Test business service directly
+var psIn = SiebelApp.S_App.NewPropertySet();
+psIn.SetProperty("QueryText", "test");
+SiebelApp.S_App.GetService("SemanticSearchAPIService").InvokeMethod("InvokeSearch", psIn, {
+    async: false
+});
+```
+
+---
+
+## 6. Performance Optimization
+
+### 6.1. Caching Strategy
+
+Consider caching frequent queries in Siebel:
+
+```javascript
+// Add to PM
+CatalogSearchPM.prototype.searchCache = {};
+
+CatalogSearchPM.prototype.ExecuteSemanticSearch = function () {
+    var query = this.GetQueryText();
+    var cacheKey = query.toLowerCase().trim();
+    
+    // Check cache
+    if (this.searchCache[cacheKey]) {
+        console.log("Using cached results for: " + query);
+        this.ApplySearchResults(this.searchCache[cacheKey]);
+        return;
+    }
+    
+    // Continue with API call...
+};
+```
+
+### 6.2. Connection Pooling
+
+Configure EAI HTTP Transport for optimal performance:
+1. Navigate to **Administration - Web Services > HTTP Configuration**
+2. Set Max Connections: 20
+3. Set Connection Timeout: 5000ms
+4. Set Read Timeout: 10000ms
+
+---
+
+## 7. Maintenance Procedures
+
+### 7.1. Update API Endpoint
+
+```sql
+-- Update URL if API endpoint changes
+UPDATE S_SYS_PROF_PROP
+SET VAL = 'http://new-server:8080/ords/semantic_search/siebel/search'
+WHERE NAME = 'URL'
+  AND PAR_ROW_ID = (SELECT ROW_ID FROM S_SYS_PROF WHERE NAME = 'SemanticSearchORDS');
+
+COMMIT;
+```
+
+### 7.2. Monitor API Usage
+
+Create monitoring query:
+
+```sql
+-- Check recent search activity from Siebel
+SELECT 
+    COUNT(*) AS search_count,
+    TO_CHAR(request_timestamp, 'YYYY-MM-DD HH24:MI') AS time_bucket
+FROM SEMANTIC_SEARCH.API_SEARCH_LOG
+WHERE request_timestamp >= SYSDATE - 1
+GROUP BY TO_CHAR(request_timestamp, 'YYYY-MM-DD HH24:MI')
+ORDER BY time_bucket DESC;
+```
+
+---
+
+## 8. Next Steps
+
+Once this TDD is complete:
+- Review **Deployment Guide** for complete deployment checklist
+- Review **Testing Guide** for comprehensive test scenarios
+- Schedule UAT with business users
+- Plan go-live and rollback procedures
