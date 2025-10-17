@@ -376,158 +376,20 @@ END;
 - 2,000 complex queries × $0.002 (with 90% cache) = $0.40/day
 - **Total: $1.20/day = $438/year** (20% increase)
 
-### Architecture Overview
+### When to Implement Phase 1
 
-```
-┌─────────────────────────────────────────────────────────┐
-│                    Siebel Open UI                        │
-└─────────────────────┬───────────────────────────────────┘
-                      │ User Query: "My laptop screen is broken"
-                      ↓
-┌─────────────────────────────────────────────────────────┐
-│              LLM API Gateway (e.g., Langchain)          │
-│  ┌────────────────────────────────────────────────┐    │
-│  │  1. Query Understanding                         │    │
-│  │  2. Retrieval Strategy Selection                │    │
-│  │  3. Context Assembly                            │    │
-│  │  4. LLM Prompt Generation                       │    │
-│  │  5. Response Synthesis                          │    │
-│  └────────────────────────────────────────────────┘    │
-└─────────────────────────┬───────────────────────────────┘
-                          │
-          ┌───────────────┴───────────────┐
-          ↓                               ↓
-┌─────────────────────┐         ┌──────────────────────┐
-│  Vector Database    │         │  LLM Service         │
-│  (Pinecone/Weaviate)│         │  (GPT-4 / Claude)    │
-│                     │         │                      │
-│  - Service Request  │         │  Prompt:             │
-│    embeddings       │         │  "Based on these     │
-│  - Catalog items    │         │   similar SRs:       │
-│  - Metadata         │         │   [context]          │
-│                     │         │   Recommend catalog" │
-└─────────────────────┘         └──────────────────────┘
-```
+✅ **Go if:**
+- Users frequently ask "Why this recommendation?"
+- Need to handle urgent/complex queries differently
+- Want to improve user satisfaction scores
+- Can afford $438/year vs $365/year (20% increase)
 
-### Key Differences from Current Approach
-
-| Aspect | Current | LLM-Native RAG |
-|--------|---------|----------------|
-| **Search Method** | Vector similarity + aggregation | LLM reasoning over retrieved context |
-| **Result Generation** | Frequency-based catalog ranking | LLM-generated recommendations with explanations |
-| **Flexibility** | Fixed algorithm | Natural language instructions |
-| **Intelligence** | Similarity matching | Understanding, reasoning, explanation |
-| **Cost Model** | Per-embedding | Per-query (higher) |
-
-### Implementation Example
-
-```python
-from langchain.chat_models import ChatOpenAI
-from langchain.embeddings import OpenAIEmbeddings
-from langchain.vectorstores import Pinecone
-from langchain.chains import RetrievalQA
-from langchain.prompts import PromptTemplate
-
-# Initialize components
-embeddings = OpenAIEmbeddings()
-vectorstore = Pinecone.from_existing_index("siebel-knowledge", embeddings)
-llm = ChatOpenAI(model="gpt-4", temperature=0)
-
-# Custom prompt template
-template = """You are an intelligent service catalog assistant for a CRM system.
-
-Based on the following similar service requests from the knowledge base, recommend the 
-top 5 most appropriate catalog items for the user's issue.
-
-User Query: {query}
-
-Similar Past Service Requests:
-{context}
-
-Provide your recommendations in this JSON format:
-{{
-    "recommendations": [
-        {{
-            "catalog_path": "Category > Subcategory > Item",
-            "confidence": 0.95,
-            "reasoning": "Why this is relevant"
-        }}
-    ],
-    "suggested_actions": ["Action 1", "Action 2"]
-}}
-
-Consider:
-1. The user's actual intent, not just keywords
-2. Similar problems and their successful resolutions
-3. The urgency and severity of the issue
-4. Related items that might also be needed
-"""
-
-prompt = PromptTemplate(template=template, input_variables=["query", "context"])
-
-# Create RAG chain
-qa_chain = RetrievalQA.from_chain_type(
-    llm=llm,
-    chain_type="stuff",
-    retriever=vectorstore.as_retriever(search_kwargs={"k": 10}),
-    chain_type_kwargs={"prompt": prompt}
-)
-
-# Execute search
-result = qa_chain.run("My laptop screen is broken and flickering")
-```
-
-### Advantages
-
-✅ **Natural Language Understanding**: LLM truly understands intent, nuance, context  
-✅ **Explainable Results**: Can provide reasoning for each recommendation  
-✅ **Flexible Logic**: Change behavior by modifying prompts, not code  
-✅ **Multi-Step Reasoning**: Can consider complex scenarios (e.g., "user already tried X")  
-✅ **Conversational**: Can ask clarifying questions ("Is it a hardware or software issue?")  
-✅ **Cross-Lingual**: LLM can translate queries automatically  
-✅ **Adaptive**: Learns from feedback through prompt engineering  
-
-### Disadvantages
-
-❌ **Higher Cost**: $0.01-0.03 per query vs. $0.0001 for embeddings  
-❌ **Latency**: 2-5 seconds for LLM inference  
-❌ **Unpredictability**: LLM responses can vary  
-❌ **Requires External Service**: Dependency on OpenAI/Anthropic  
-❌ **Prompt Engineering**: Requires expertise to craft good prompts  
-❌ **Token Limits**: Context window limitations (though 128K now available)  
-
-### Cost Analysis
-
-**Current Approach:**
-- Embedding: $0.0001 per query
-- 10,000 queries/day = $1/day = $365/year
-
-**LLM-Native Approach:**
-- LLM call: $0.02 per query (GPT-4)
-- 10,000 queries/day = $200/day = $73,000/year
-
-**Mitigation:**
-- Use cheaper models (GPT-3.5-turbo: $0.002/query = $7,300/year)
-- Implement aggressive caching
-- Use LLM only for complex queries, fallback to vector for simple ones
-
-### When to Use
-
-✅ **Use LLM-Native When:**
-- Need natural explanations for recommendations
-- Complex decision-making required
-- User experience is priority over cost
-- Low to medium query volume (<1000/day)
-- Need conversational capabilities
-
-❌ **Don't Use When:**
-- High query volume (>10K/day)
-- Cost-sensitive
-- Sub-second latency required
-- Deterministic behavior critical
+❌ **No-Go if:**
+- Cost per query must stay under $0.0001
+- Sub-second response time is critical
+- Query volume exceeds 50K/day without caching infrastructure
 
 ---
-
 
 ## Phase 2: Microservices Architecture with Oracle 23ai Core (6-12 months)
 
