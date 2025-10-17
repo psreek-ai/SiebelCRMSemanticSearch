@@ -23,14 +23,88 @@ The architecture is built on the Oracle ecosystem, leveraging **Oracle Autonomou
 - **Seamless Siebel Integration:** Integrates directly into the Siebel Open UI, providing a modern search experience without leaving the application.
 
 ## 3. High-Level Architecture
+
+### 3.1. System Overview
+
+```mermaid
+graph TB
+    subgraph Users["Users"]
+        EndUser["End Users<br/>(Natural Language Queries)"]
+    end
+    
+    subgraph Azure["Microsoft Azure Environment"]
+        subgraph SiebelEnv["Siebel Environment"]
+            Siebel["Siebel CRM<br/>(Open UI)"]
+            Oracle12c["Oracle 12c<br/>(Historical Data)"]
+        end
+        
+        subgraph TestEnv["Test Environment"]
+            Streamlit["Streamlit App<br/>(Azure Container Apps)"]
+        end
+        
+        VNet["Azure Virtual Network<br/>(Private Connectivity)"]
+    end
+    
+    subgraph Interconnect["Azure-OCI Private Backbone"]
+        ODSA["Oracle Database Service for Azure<br/>(Low-latency < 2ms)"]
+    end
+    
+    subgraph OCI["Oracle Cloud Infrastructure"]
+        subgraph ADB["Autonomous Database"]
+            ORDS["Pre-configured ORDS<br/>(REST API)"]
+            VectorDB["AI Vector Search<br/>(HNSW Index)"]
+            PLSQL["PL/SQL Logic<br/>(Business Rules)"]
+        end
+        
+        GenAI["OCI Generative AI<br/>(Cohere Embed v3.0)"]
+    end
+    
+    EndUser -->|1. Search Query| Siebel
+    EndUser -.->|Test/QA| Streamlit
+    
+    Siebel -->|2. HTTPS POST| ORDS
+    Streamlit -.->|2. HTTPS POST| ORDS
+    
+    Oracle12c -.->|Batch: Nightly ETL| VectorDB
+    
+    ORDS -->|3. Execute| PLSQL
+    PLSQL -->|4. Embed Query| GenAI
+    GenAI -->|5. Return Vector| PLSQL
+    PLSQL -->|6. Vector Search| VectorDB
+    VectorDB -->|7. Top Matches| PLSQL
+    PLSQL -->|8. JSON Response| ORDS
+    
+    ORDS -->|9. Results| Siebel
+    ORDS -.->|9. Results| Streamlit
+    
+    VNet -.->|Private Link| ODSA
+    ODSA -.->|Secure Connection| ADB
+    
+    classDef azure fill:#0078D4,stroke:#004578,color:#fff
+    classDef oci fill:#C74634,stroke:#8B2F23,color:#fff
+    classDef user fill:#107C10,stroke:#094509,color:#fff
+    classDef interconnect fill:#FFB900,stroke:#C79400,color:#000
+    
+    class Azure,SiebelEnv,TestEnv,VNet azure
+    class OCI,ADB,GenAI oci
+    class Users,EndUser user
+    class Interconnect,ODSA interconnect
+```
+
+### 3.2. Data Flows
+
 The solution consists of two main flows:
 
-1.  **Offline Indexing:** A batch process extracts historical data from the Siebel database, converts text narratives into numerical vectors (embeddings) using the OCI Generative AI service, and stores them in an Oracle Autonomous Database vector index. The private Azure-OCI interconnect ensures secure, high-performance data transfer.
+1.  **Offline Indexing (Batch Process):** A nightly job extracts historical data from the Siebel Oracle 12c database via database links, converts text narratives into 1024-dimensional vectors using the OCI Generative AI service (Cohere Embed v3.0), and stores them in the Oracle Autonomous Database vector index with HNSW algorithm for fast similarity search. The private Azure-OCI interconnect (ODSA) ensures secure, low-latency data transfer without traversing the public internet.
 
-2.  **Real-Time Search:** The Siebel UI calls a secure ORDS REST endpoint that's pre-configured within Autonomous Database. A PL/SQL procedure converts the user's query to a vector, performs a similarity search against the index, and returns a ranked list of catalog recommendations. The managed ORDS infrastructure ensures high availability and automatic scaling.
+2.  **Real-Time Search (User Query):** When a user enters a natural language query in the Siebel UI, an eScript makes an HTTPS POST request to the pre-configured ORDS REST endpoint within Autonomous Database. A PL/SQL procedure (`GET_SEMANTIC_RECOMMENDATIONS`) converts the user's query to a vector, performs a cosine similarity search using `VECTOR_DISTANCE` against the HNSW index, aggregates results by catalog item frequency, and returns a ranked JSON list of the top 5 recommendations. The managed ORDS infrastructure provides automatic scaling and high availability (99.95% SLA).
 
-![Architecture Diagram](docs/images/architecture_diagram.png) 
-*(Note: Image link is a placeholder for the actual diagram file which should be added to the repository)*
+### 3.3. Detailed Architecture Diagrams
+
+For comprehensive visual documentation including component diagrams, data flow sequences, network topology, security architecture, deployment patterns, and vector search internals, see:
+
+- **[Complete Architecture Diagrams](docs/ARCHITECTURE_DIAGRAMS.md)** - Comprehensive visual documentation with 20+ Mermaid diagrams
+- **[Project Architecture Guide](docs/Project%20Architecture.md)** - Detailed system architecture with embedded diagrams
 
 ## 4. Project Documentation
 All technical design documents, deployment guides, and testing plans are located in the `/docs` directory.
